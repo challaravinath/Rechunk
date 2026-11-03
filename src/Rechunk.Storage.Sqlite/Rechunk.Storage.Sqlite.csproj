@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>SQLite storage for Rechunk state, audit log and indexes. Early work in progress.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <ProjectReference Include="..\Rechunk.Core\Rechunk.Core.csproj" />
+  </ItemGroup>
+
+</Project>

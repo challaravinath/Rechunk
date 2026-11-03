@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Semantic Kernel helpers for Rechunk. Early work in progress.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SemanticKernel.Abstractions" />
+    <ProjectReference Include="..\Rechunk.Core\Rechunk.Core.csproj" />
+  </ItemGroup>
+
+</Project>
