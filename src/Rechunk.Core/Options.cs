@@ -51,9 +51,25 @@ public sealed class RechunkOptions
             throw new ArgumentOutOfRangeException(nameof(MinHash), "Threshold has to be above 0 and at most 1.");
         }
 
-        if (MinHash.Bands is { } bands && MinHash.Rows is { } rows && bands * rows != MinHash.Permutations)
+        if (MinHash.ShingleSize < 1)
         {
-            throw new ArgumentException("Bands times Rows has to equal Permutations.", nameof(MinHash));
+            throw new ArgumentOutOfRangeException(nameof(MinHash), "ShingleSize has to be at least 1.");
+        }
+
+        if (MinHash.MinWords < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MinHash), "MinWords has to be at least 1.");
+        }
+
+        if (MinHash.Bands.HasValue != MinHash.Rows.HasValue)
+        {
+            throw new ArgumentException("Set both Bands and Rows, or neither.", nameof(MinHash));
+        }
+
+        if (MinHash.Bands is { } bands && MinHash.Rows is { } rows
+            && (bands < 1 || rows < 1 || (long)bands * rows > MinHash.Permutations))
+        {
+            throw new ArgumentException("Bands and Rows have to be at least 1, and Bands times Rows can not be more than Permutations.", nameof(MinHash));
         }
     }
 }
@@ -77,22 +93,42 @@ public sealed class SimHashOptions
     /// Chunks with fewer words than this are only matched exactly. SimHash on a handful of words says very little.
     /// </summary>
     public int MinWords { get; set; } = 8;
+
+    /// <summary>
+    /// Only matters when MinHash is on as well. When true (the default), a SimHash match only counts if
+    /// MinHash agrees that the two chunks are at least Threshold similar. When false, SimHash is trusted
+    /// on its own. SimHash alone is quick but rough: a few changed words in a short chunk can look close
+    /// or far by chance.
+    /// </summary>
+    public bool ConfirmWithMinHash { get; set; } = true;
 }
 
 public sealed class MinHashOptions
 {
-    /// <summary>Stage 3. Not written yet, so turning it on throws.</summary>
+    /// <summary>Stage 3. Off by default.</summary>
     public bool Enabled { get; set; }
 
+    /// <summary>Slots in the signature. More is more exact and uses more memory (4 bytes per slot per chunk).</summary>
     public int Permutations { get; set; } = 128;
 
-    /// <summary>Starting value, to be tuned on the benchmark.</summary>
+    /// <summary>
+    /// Jaccard similarity of the word shingles at or above which two chunks count as near duplicates.
+    /// Starting value, to be tuned on your own data.
+    /// </summary>
     public double Threshold { get; set; } = 0.85;
 
     /// <summary>Words per shingle.</summary>
     public int ShingleSize { get; set; } = 3;
 
-    /// <summary>Set both Bands and Rows to pick them by hand, or leave them null to derive them from Threshold.</summary>
+    /// <summary>
+    /// Chunks with fewer words than this are only matched exactly. Same idea as the SimHash setting.
+    /// </summary>
+    public int MinWords { get; set; } = 8;
+
+    /// <summary>
+    /// Set both Bands and Rows to pick them by hand, or leave them null to derive them from Threshold.
+    /// Bands times Rows can not be more than Permutations.
+    /// </summary>
     public int? Bands { get; set; }
 
     public int? Rows { get; set; }

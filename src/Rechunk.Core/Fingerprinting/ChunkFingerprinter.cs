@@ -1,8 +1,9 @@
 namespace Rechunk;
 
 /// <summary>
-/// Default fingerprinter. The exact hash is always made. SimHash is made when it is switched on in
-/// the options. MinHash is not written yet and throws if you switch it on.
+/// Default fingerprinter. The exact hash is always made. SimHash and MinHash are made when they are
+/// switched on in the options, and only for chunks with enough words. The text is normalized and split
+/// into words once and shared by all of them.
 /// </summary>
 public sealed class ChunkFingerprinter : IChunkFingerprinter
 {
@@ -30,11 +31,17 @@ public sealed class ChunkFingerprinter : IChunkFingerprinter
             if (_options.SimHash.Enabled)
             {
                 version += $"+{SimHasher.Version}-s{_options.SimHash.ShingleSize}-m{_options.SimHash.MinWords}";
+            }
 
-                if (_options.GuardNumbersAndNegations)
-                {
-                    version += $"+{FalseMergeGuard.Version}";
-                }
+            if (_options.MinHash.Enabled)
+            {
+                var m = _options.MinHash;
+                version += $"+{MinHasher.Version}-s{m.ShingleSize}-p{m.Permutations}-m{m.MinWords}";
+            }
+
+            if ((_options.SimHash.Enabled || _options.MinHash.Enabled) && _options.GuardNumbersAndNegations)
+            {
+                version += $"+{FalseMergeGuard.Version}";
             }
 
             return version;
@@ -50,24 +57,27 @@ public sealed class ChunkFingerprinter : IChunkFingerprinter
         ulong guard = 0;
         ReadOnlyMemory<uint> minHash = default;
 
-        if (_options.SimHash.Enabled)
+        if (_options.SimHash.Enabled || _options.MinHash.Enabled)
         {
             var tokens = WordTokenizer.Tokenize(normalized);
+            var simHashOn = _options.SimHash.Enabled && tokens.Count >= _options.SimHash.MinWords;
+            var minHashOn = _options.MinHash.Enabled && tokens.Count >= _options.MinHash.MinWords;
 
-            if (tokens.Count >= _options.SimHash.MinWords)
+            if (simHashOn)
             {
                 simHash = _simHasher.Compute(tokens);
-
-                if (_options.GuardNumbersAndNegations)
-                {
-                    guard = FalseMergeGuard.Signature(tokens);
-                }
             }
-        }
 
-        if (_options.MinHash.Enabled)
-        {
-            minHash = _minHasher.Compute(normalized);
+            if (minHashOn)
+            {
+                minHash = _minHasher.Compute(tokens);
+            }
+
+            // the guard only matters for chunks that a near duplicate stage will look at
+            if ((simHashOn || minHashOn) && _options.GuardNumbersAndNegations)
+            {
+                guard = FalseMergeGuard.Signature(tokens);
+            }
         }
 
         return new ChunkFingerprint(exact, simHash, minHash, guard);

@@ -1,5 +1,14 @@
 using BenchmarkDotNet.Running;
+using Rechunk.Benchmarks;
 
-// run with: dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- --filter "*"
-// for a quick check add: --job dry
+// Benchmarks:  dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- --filter "*"
+//              add --job dry for a quick check
+// Synthetic measurement (a few seconds, not a benchmark):
+//              dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- --synthetic
+if (args.Contains("--synthetic"))
+{
+    await SyntheticMeasurement.RunAsync(Console.Out);
+    return;
+}
+
 BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);

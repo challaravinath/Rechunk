@@ -19,7 +19,7 @@ public interface IExactHashIndex
     ValueTask<bool> RemoveAsync(string scope, ReadOnlyMemory<byte> exactHash, CancellationToken ct = default);
 }
 
-/// <summary>Stage 2 and 3: SimHash filter and MinHash with LSH.</summary>
+/// <summary>Stage 2 and 3: the SimHash index and the MinHash LSH index.</summary>
 public interface INearDuplicateIndex
 {
     ValueTask AddAsync(ChunkId id, string scope, ChunkFingerprint fingerprint, CancellationToken ct = default);
@@ -28,6 +28,17 @@ public interface INearDuplicateIndex
 
     ValueTask<IReadOnlyList<NearDuplicateMatch>> FindAsync(
         ChunkFingerprint fingerprint, string scope, CancellationToken ct = default);
+}
+
+/// <summary>The MinHash index. Same as the SimHash one, plus a way to ask how similar a stored chunk is.</summary>
+public interface IMinHashIndex : INearDuplicateIndex
+{
+    /// <summary>
+    /// Estimated Jaccard similarity between the signature and the stored chunk, or null if that chunk is
+    /// not stored in the scope. Used to confirm a SimHash match.
+    /// </summary>
+    ValueTask<double?> EstimateJaccardAsync(
+        string scope, ChunkId id, ReadOnlyMemory<uint> signature, CancellationToken ct = default);
 }
 
 /// <summary>Turns text into vectors. The Microsoft.Extensions.AI package will have an adapter for this.</summary>
