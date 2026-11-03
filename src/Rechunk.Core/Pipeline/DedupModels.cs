@@ -12,12 +12,17 @@ public enum DedupOutcome
     Flagged,
 }
 
+/// <summary>
+/// What happened to one chunk. Stage and DuplicateOf are set when it matched something.
+/// HammingDistance is set for a SimHash match (0 means the same SimHash, not the same text).
+/// </summary>
 public sealed record DedupDecision(
     ChunkInput Input,
     ChunkId Id,
     DedupOutcome Outcome,
     MatchStage? Stage,
-    ChunkId? DuplicateOf);
+    ChunkId? DuplicateOf,
+    int? HammingDistance = null);
 
 public sealed record DedupReport(string Scope, bool DryRun, IReadOnlyList<DedupDecision> Decisions)
 {

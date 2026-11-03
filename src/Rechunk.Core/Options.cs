@@ -26,9 +26,19 @@ public sealed class RechunkOptions
             throw new ArgumentException("DefaultScope can not be empty.", nameof(DefaultScope));
         }
 
-        if (SimHash.MaxHammingDistance is < 0 or > 64)
+        if (SimHash.MaxHammingDistance is < 0 or > 63)
         {
-            throw new ArgumentOutOfRangeException(nameof(SimHash), "MaxHammingDistance has to be between 0 and 64.");
+            throw new ArgumentOutOfRangeException(nameof(SimHash), "MaxHammingDistance has to be between 0 and 63.");
+        }
+
+        if (SimHash.ShingleSize < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(SimHash), "ShingleSize has to be at least 1.");
+        }
+
+        if (SimHash.MinWords < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(SimHash), "MinWords has to be at least 1.");
         }
 
         if (MinHash.Permutations <= 0)
@@ -50,16 +60,28 @@ public sealed class RechunkOptions
 
 public sealed class SimHashOptions
 {
-    /// <summary>Off for now, the SimHash stage is not written yet.</summary>
+    /// <summary>Stage 2. Off by default.</summary>
     public bool Enabled { get; set; }
 
-    /// <summary>Starting value, to be tuned on the benchmark.</summary>
+    /// <summary>
+    /// How many of the 64 bits may differ for two chunks to count as near duplicates. Starting value, to be
+    /// tuned on the benchmark. Keep it small: the index splits the hash into MaxHammingDistance + 1 slices,
+    /// and above about 7 the slices get so short that lookups turn into long scans.
+    /// </summary>
     public int MaxHammingDistance { get; set; } = 3;
+
+    /// <summary>Words per shingle.</summary>
+    public int ShingleSize { get; set; } = 3;
+
+    /// <summary>
+    /// Chunks with fewer words than this are only matched exactly. SimHash on a handful of words says very little.
+    /// </summary>
+    public int MinWords { get; set; } = 8;
 }
 
 public sealed class MinHashOptions
 {
-    /// <summary>Off for now, the MinHash stage is not written yet.</summary>
+    /// <summary>Stage 3. Not written yet, so turning it on throws.</summary>
     public bool Enabled { get; set; }
 
     public int Permutations { get; set; } = 128;

@@ -1,5 +1,5 @@
 using BenchmarkDotNet.Running;
-using Rechunk.Benchmarks;
 
-// run with: dotnet run -c Release --project benchmarks/Rechunk.Benchmarks
-BenchmarkRunner.Run<ExactHashBenchmarks>(args: args);
+// run with: dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- --filter "*"
+// for a quick check add: --job dry
+BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);
