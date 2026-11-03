@@ -13,12 +13,14 @@ Early, work in progress. Nothing is published to NuGet yet and the API will chan
 What works today:
 
 - cleaning up text and the exact hash stage (SHA-256), with duplicate detection per scope
+- the SimHash stage (off by default): a 64 bit fingerprint over word shingles and an in memory index that finds chunks within a few bits of each other, per scope and safe to use from several threads
+- a guard that keeps two chunks apart when their numbers or "not" style words differ, so "30 days" and "60 days" are not merged
 - a small pipeline builder, DI setup, dry run mode
 - the interfaces for the rest
 
 What is still stubs (they throw NotImplementedException with a TODO in the code):
 
-- SimHash and MinHash with LSH
+- MinHash with LSH (the third stage, which will confirm what SimHash finds)
 - revision tracking and clean deletes
 - the SQLite storage, the vector store writer, the Microsoft.Extensions.AI wrapper and the Semantic Kernel helper (these are just project shells for now)
 
@@ -51,6 +53,8 @@ dotnet restore
 dotnet build -c Release
 dotnet test -c Release
 ```
+
+To time the SimHash code: `dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- --filter "*SimHash*"`
 
 To try the sample: `dotnet run --project samples/Sample.Console`
 

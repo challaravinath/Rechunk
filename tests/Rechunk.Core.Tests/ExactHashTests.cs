@@ -57,12 +57,14 @@ public class ExactHashTests
     }
 
     [Fact]
-    public void Turning_on_SimHash_throws_until_it_is_written()
+    public void Turning_on_SimHash_fills_the_simhash_for_long_enough_text()
     {
         var options = new RechunkOptions();
         options.SimHash.Enabled = true;
 
-        Assert.Throws<NotImplementedException>(() => new ChunkFingerprinter(options).Compute("anything"));
+        var fp = new ChunkFingerprinter(options).Compute(TestText.Paragraph(1, 40));
+
+        Assert.True(fp.HasSimHash);
     }
 
     [Fact]
