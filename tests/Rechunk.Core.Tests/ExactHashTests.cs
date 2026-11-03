@@ -68,11 +68,18 @@ public class ExactHashTests
     }
 
     [Fact]
-    public void Turning_on_MinHash_throws_until_it_is_written()
+    public void Turning_on_MinHash_makes_a_signature_for_long_enough_chunks()
     {
         var options = new RechunkOptions();
         options.MinHash.Enabled = true;
+        var fingerprinter = new ChunkFingerprinter(options);
 
-        Assert.Throws<NotImplementedException>(() => new ChunkFingerprinter(options).Compute("anything"));
+        var fp = fingerprinter.Compute(TestText.Paragraph(3, 50));
+        var tooShort = fingerprinter.Compute("only a few words here");
+
+        Assert.True(fp.HasMinHash);
+        Assert.Equal(options.MinHash.Permutations, fp.MinHash.Length);
+        Assert.False(fp.HasSimHash);
+        Assert.False(tooShort.HasMinHash);
     }
 }

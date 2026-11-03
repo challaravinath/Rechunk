@@ -77,7 +77,7 @@ public class SimHashBandIndexTests
         var matches = index.Find("s", query);
 
         Assert.Equal(new[] { Id(2), Id(3), Id(1) }, matches.Select(m => m.Existing));
-        Assert.Equal(new[] { 0, 1, 3 }, matches.Select(m => m.HammingDistance));
+        Assert.Equal(new[] { 0, 1, 3 }, matches.Select(m => m.HammingDistance!.Value));
         Assert.All(matches, m => Assert.Equal(MatchStage.SimHash, m.Stage));
     }
 

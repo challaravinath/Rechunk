@@ -4,11 +4,19 @@ using Microsoft.Extensions.Logging.Abstractions;
 namespace Rechunk;
 
 /// <summary>
-/// Runs chunks through the dedup stages.
-///  Stage 1: exact hash, always on.
-///  Stage 2: SimHash, when it is switched on in the options.
-///  Stage 3: MinHash with LSH, not written yet.
-/// A chunk that matches in an earlier stage never reaches the later ones.
+/// Runs chunks through the dedup stages. A chunk that matches in an earlier stage never reaches the later ones.
+///
+///  Stage 1, exact hash: always on. Catches the same text after cleanup.
+///  Stage 2, SimHash: quick and rough. Finds chunks that are only a few bits away.
+///  Stage 3, MinHash with LSH: finds chunks whose word shingles overlap by at least the threshold.
+///
+/// When both near stages are on, MinHash does two jobs. It confirms what SimHash found (unless
+/// SimHash.ConfirmWithMinHash is false), and it catches looser duplicates that SimHash missed.
+/// The false merge guard applies to both: chunks whose numbers or negations differ are never merged.
+///
+/// A chunk that is skipped as a near duplicate is not added to the near indexes. The chunk it matched
+/// stands for it from then on, and its exact hash is pointed at that chunk. This keeps the indexes small
+/// but also means a chain of small edits (A, then B close to A, then C close to B but not to A) is not followed.
 /// </summary>
 public sealed class RechunkPipeline
 {
@@ -16,6 +24,7 @@ public sealed class RechunkPipeline
     private readonly IChunkFingerprinter _fingerprinter;
     private readonly IExactHashIndex _exactIndex;
     private readonly INearDuplicateIndex? _simHashIndex;
+    private readonly IMinHashIndex? _minHashIndex;
     private readonly ILogger _logger;
 
     public RechunkPipeline(
@@ -23,7 +32,8 @@ public sealed class RechunkPipeline
         IChunkFingerprinter fingerprinter,
         IExactHashIndex exactIndex,
         ILogger? logger = null,
-        INearDuplicateIndex? simHashIndex = null)
+        INearDuplicateIndex? simHashIndex = null,
+        IMinHashIndex? minHashIndex = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _fingerprinter = fingerprinter ?? throw new ArgumentNullException(nameof(fingerprinter));
@@ -34,6 +44,11 @@ public sealed class RechunkPipeline
         if (options.SimHash.Enabled)
         {
             _simHashIndex = simHashIndex ?? new SimHashBandIndex(options.SimHash.MaxHammingDistance);
+        }
+
+        if (options.MinHash.Enabled)
+        {
+            _minHashIndex = minHashIndex ?? new MinHashLshIndex(options.MinHash);
         }
     }
 
@@ -50,6 +65,9 @@ public sealed class RechunkPipeline
         var dryRunExact = new Dictionary<string, ChunkId>();
         var dryRunSimHash = _options.DryRun && _simHashIndex is not null
             ? new SimHashBandIndex(_options.SimHash.MaxHammingDistance)
+            : null;
+        var dryRunMinHash = _options.DryRun && _minHashIndex is not null
+            ? new MinHashLshIndex(_options.MinHash)
             : null;
 
         var skipNearDuplicates = _options.OnDuplicate != DuplicatePolicy.Flag;
@@ -71,17 +89,13 @@ public sealed class RechunkPipeline
 
             if (exact is { } owner)
             {
-                decisions.Add(Repeat(chunk, id, MatchStage.Exact, owner, null));
-                LogMatch(chunk, MatchStage.Exact, owner, null);
+                decisions.Add(Repeat(chunk, id, MatchStage.Exact, owner, null, null));
+                LogMatch(chunk, MatchStage.Exact, owner, null, null);
                 continue;
             }
 
-            // Stage 2: have we seen something very close to it?
-            NearDuplicateMatch? near = null;
-            if (_simHashIndex is not null && fingerprint.HasSimHash)
-            {
-                near = await FindNearAsync(scope, fingerprint, dryRunSimHash, chunk, ct).ConfigureAwait(false);
-            }
+            // Stages 2 and 3: have we seen something very close to it?
+            var near = await FindNearAsync(scope, fingerprint, dryRunSimHash, dryRunMinHash, chunk, ct).ConfigureAwait(false);
 
             // A near duplicate that is not embedded stands for the canonical chunk from now on. A flagged one is
             // embedded like any new chunk, so it is stored as itself.
@@ -93,7 +107,7 @@ public sealed class RechunkPipeline
                 dryRunExact[id.Value] = storedAs;
                 if (embedded)
                 {
-                    dryRunSimHash?.Add(id, scope, fingerprint.SimHash, fingerprint.GuardSignature);
+                    AddToNearIndexes(id, scope, fingerprint, dryRunSimHash, dryRunMinHash);
                 }
             }
             else
@@ -102,14 +116,22 @@ public sealed class RechunkPipeline
                 if (!added.Added)
                 {
                     // another caller stored the same text between our lookup and now
-                    decisions.Add(Repeat(chunk, id, MatchStage.Exact, added.Owner, null));
-                    LogMatch(chunk, MatchStage.Exact, added.Owner, null);
+                    decisions.Add(Repeat(chunk, id, MatchStage.Exact, added.Owner, null, null));
+                    LogMatch(chunk, MatchStage.Exact, added.Owner, null, null);
                     continue;
                 }
 
-                if (embedded && _simHashIndex is not null && fingerprint.HasSimHash)
+                if (embedded)
                 {
-                    await _simHashIndex.AddAsync(id, scope, fingerprint, ct).ConfigureAwait(false);
+                    if (_simHashIndex is not null && fingerprint.HasSimHash)
+                    {
+                        await _simHashIndex.AddAsync(id, scope, fingerprint, ct).ConfigureAwait(false);
+                    }
+
+                    if (_minHashIndex is not null && fingerprint.HasMinHash)
+                    {
+                        await _minHashIndex.AddAsync(id, scope, fingerprint, ct).ConfigureAwait(false);
+                    }
                 }
             }
 
@@ -119,59 +141,129 @@ public sealed class RechunkPipeline
                 continue;
             }
 
-            decisions.Add(Repeat(chunk, id, MatchStage.SimHash, near.Existing, near.HammingDistance));
-            LogMatch(chunk, MatchStage.SimHash, near.Existing, near.HammingDistance);
+            decisions.Add(Repeat(chunk, id, near.Stage, near.Existing, near.HammingDistance, near.EstimatedJaccard));
+            LogMatch(chunk, near.Stage, near.Existing, near.HammingDistance, near.EstimatedJaccard);
         }
 
         return new DedupReport(scope, _options.DryRun, decisions);
     }
 
+    private void AddToNearIndexes(
+        ChunkId id, string scope, ChunkFingerprint fingerprint, SimHashBandIndex? simHashOverlay, MinHashLshIndex? minHashOverlay)
+    {
+        if (fingerprint.HasSimHash)
+        {
+            simHashOverlay?.Add(id, scope, fingerprint.SimHash, fingerprint.GuardSignature);
+        }
+
+        if (fingerprint.HasMinHash)
+        {
+            minHashOverlay?.Add(id, scope, fingerprint.MinHash.Span, fingerprint.GuardSignature);
+        }
+    }
+
     private async ValueTask<NearDuplicateMatch?> FindNearAsync(
         string scope,
         ChunkFingerprint fingerprint,
-        SimHashBandIndex? dryRunIndex,
+        SimHashBandIndex? simHashOverlay,
+        MinHashLshIndex? minHashOverlay,
         ChunkInput chunk,
         CancellationToken ct)
     {
-        var candidates = await _simHashIndex!.FindAsync(fingerprint, scope, ct).ConfigureAwait(false);
+        var minHashOn = _minHashIndex is not null && fingerprint.HasMinHash;
 
-        IEnumerable<NearDuplicateMatch> all = candidates;
-        if (dryRunIndex is not null)
+        // Stage 2: SimHash candidates, closest first.
+        if (_simHashIndex is not null && fingerprint.HasSimHash)
         {
-            all = all.Concat(dryRunIndex.Find(scope, fingerprint.SimHash));
-        }
-
-        NearDuplicateMatch? best = null;
-        foreach (var candidate in all)
-        {
-            if (_options.GuardNumbersAndNegations && candidate.GuardSignature != fingerprint.GuardSignature)
+            var found = await _simHashIndex.FindAsync(fingerprint, scope, ct).ConfigureAwait(false);
+            IEnumerable<NearDuplicateMatch> all = found;
+            if (simHashOverlay is not null)
             {
-                _logger.LogDebug(
-                    "Chunk {Ordinal} is close to {Existing} but differs in numbers or negations, keeping both",
-                    chunk.Ordinal, Short(candidate.Existing.Value));
-                continue;
+                all = all.Concat(simHashOverlay.Find(scope, fingerprint.SimHash));
             }
 
-            if (best is null || candidate.HammingDistance < best.HammingDistance)
+            foreach (var candidate in all.OrderBy(c => c.HammingDistance).ThenBy(c => c.Existing.Value, StringComparer.Ordinal))
             {
-                best = candidate;
+                if (Blocked(fingerprint, candidate, chunk))
+                {
+                    continue;
+                }
+
+                double? jaccard = null;
+                if (minHashOn)
+                {
+                    jaccard = await EstimateAsync(scope, candidate.Existing, fingerprint, minHashOverlay, ct).ConfigureAwait(false);
+                }
+
+                if (minHashOn && _options.SimHash.ConfirmWithMinHash && (jaccard is null || jaccard < _options.MinHash.Threshold))
+                {
+                    _logger.LogDebug(
+                        "Chunk {Ordinal} is close to {Existing} by SimHash but MinHash does not confirm it (Jaccard {Jaccard})",
+                        chunk.Ordinal, Short(candidate.Existing.Value), jaccard);
+                    continue;
+                }
+
+                return candidate with { EstimatedJaccard = jaccard };
             }
         }
 
-        return best;
+        // Stage 3: MinHash on its own, for what SimHash did not catch.
+        if (minHashOn)
+        {
+            var found = await _minHashIndex!.FindAsync(fingerprint, scope, ct).ConfigureAwait(false);
+            IEnumerable<NearDuplicateMatch> all = found;
+            if (minHashOverlay is not null)
+            {
+                all = all.Concat(minHashOverlay.Find(scope, fingerprint.MinHash.Span));
+            }
+
+            foreach (var candidate in all
+                .OrderByDescending(c => c.EstimatedJaccard)
+                .ThenBy(c => c.Existing.Value, StringComparer.Ordinal))
+            {
+                if (!Blocked(fingerprint, candidate, chunk))
+                {
+                    return candidate;
+                }
+            }
+        }
+
+        return null;
     }
 
-    private DedupDecision Repeat(ChunkInput chunk, ChunkId id, MatchStage stage, ChunkId of, int? distance)
+    private async ValueTask<double?> EstimateAsync(
+        string scope, ChunkId id, ChunkFingerprint fingerprint, MinHashLshIndex? overlay, CancellationToken ct)
+    {
+        var stored = await _minHashIndex!.EstimateJaccardAsync(scope, id, fingerprint.MinHash, ct).ConfigureAwait(false);
+        return stored ?? overlay?.EstimateJaccard(scope, id, fingerprint.MinHash.Span);
+    }
+
+    // the false merge guard: close wording, but different numbers or negations
+    private bool Blocked(ChunkFingerprint fingerprint, NearDuplicateMatch candidate, ChunkInput chunk)
+    {
+        if (!_options.GuardNumbersAndNegations || candidate.GuardSignature == fingerprint.GuardSignature)
+        {
+            return false;
+        }
+
+        _logger.LogDebug(
+            "Chunk {Ordinal} is close to {Existing} but differs in numbers or negations, keeping both",
+            chunk.Ordinal, Short(candidate.Existing.Value));
+        return true;
+    }
+
+    private DedupDecision Repeat(
+        ChunkInput chunk, ChunkId id, MatchStage stage, ChunkId of, int? distance, double? jaccard)
     {
         var outcome = _options.OnDuplicate == DuplicatePolicy.Flag ? DedupOutcome.Flagged : DedupOutcome.Duplicate;
-        return new DedupDecision(chunk, id, outcome, stage, of, distance);
+        return new DedupDecision(chunk, id, outcome, stage, of, distance, jaccard);
     }
 
     // never log the text, only a short piece of the hash
-    private void LogMatch(ChunkInput chunk, MatchStage stage, ChunkId existing, int? distance) =>
+    private void LogMatch(ChunkInput chunk, MatchStage stage, ChunkId existing, int? distance, double? jaccard) =>
         _logger.LogDebug(
-            "Chunk {Ordinal} matched {Stage} with {Existing} (distance {Distance})",
-            chunk.Ordinal, stage, Short(existing.Value), distance);
+            "Chunk {Ordinal} matched {Stage} with {Existing} (distance {Distance}, Jaccard {Jaccard})",
+            chunk.Ordinal, stage, Short(existing.Value), distance, jaccard);
 
     private static string Short(string value) => value.Length <= 8 ? value : value[..8];
 }

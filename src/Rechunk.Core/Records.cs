@@ -5,7 +5,7 @@ public sealed record ChunkInput(int Ordinal, string Text);
 
 /// <summary>
 /// What we remember about the text of one chunk.
-/// SimHash is 0 when the stage is off or the chunk is too short for it to mean anything.
+/// SimHash is 0 and MinHash is empty when the stage is off or the chunk is too short for it to mean anything.
 /// GuardSignature comes from the false merge guard, and is 0 when the guard is off.
 /// </summary>
 public readonly record struct ChunkFingerprint(
@@ -15,6 +15,9 @@ public readonly record struct ChunkFingerprint(
     ulong GuardSignature = 0)
 {
     public bool HasSimHash => SimHash != 0;
+
+    /// <summary>False when the stage is off or the chunk is too short.</summary>
+    public bool HasMinHash => !MinHash.IsEmpty;
 }
 
 /// <summary>Result of adding to the exact hash index. Owner is the chunk that holds the hash.</summary>
@@ -29,13 +32,13 @@ public enum MatchStage
 
 /// <summary>
 /// A chunk found by a near duplicate index. HammingDistance is filled by the SimHash stage and
-/// EstimatedJaccard by the MinHash stage. GuardSignature is the one stored with the chunk, so the
-/// pipeline can run the false merge guard without having the old text.
+/// EstimatedJaccard by the MinHash stage (and by the pipeline when MinHash confirmed a SimHash match).
+/// GuardSignature is the one stored with the chunk, so the pipeline can run the false merge guard without having the old text.
 /// </summary>
 public sealed record NearDuplicateMatch(
     ChunkId Existing,
     MatchStage Stage,
-    int HammingDistance,
+    int? HammingDistance,
     double? EstimatedJaccard = null,
     ulong GuardSignature = 0);
 

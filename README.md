@@ -14,19 +14,67 @@ What works today:
 
 - cleaning up text and the exact hash stage (SHA-256), with duplicate detection per scope
 - the SimHash stage (off by default): a 64 bit fingerprint over word shingles and an in memory index that finds chunks within a few bits of each other, per scope and safe to use from several threads
-- a guard that keeps two chunks apart when their numbers or "not" style words differ, so "30 days" and "60 days" are not merged
+- the MinHash stage (off by default): a signature of 128 numbers per chunk (word shingles, seeded stable hashing, same values on every platform) and an in memory LSH index that finds chunks whose estimated Jaccard similarity is at or above the threshold (0.85 by default), per scope and safe to use from several threads
+- all three stages working together in one pipeline. A chunk that matches an earlier stage never reaches the later ones. When SimHash and MinHash are both on, MinHash confirms what SimHash finds (you can turn that off and trust SimHash), and it also catches looser near duplicates that SimHash misses
+- a guard that keeps two chunks apart when their numbers or "not" style words differ, so "30 days" and "60 days" are not merged, in every stage
+- every decision records the stage that matched, which chunk it is a duplicate of, the SimHash distance and the Jaccard estimate
 - a small pipeline builder, DI setup, dry run mode
 - the interfaces for the rest
 
 What is still stubs (they throw NotImplementedException with a TODO in the code):
 
-- MinHash with LSH (the third stage, which will confirm what SimHash finds)
 - revision tracking and clean deletes
 - the SQLite storage, the vector store writer, the Microsoft.Extensions.AI wrapper and the Semantic Kernel helper (these are just project shells for now)
 
+## Using the stages
+
+```csharp
+var pipeline = RechunkPipeline.CreateBuilder()
+    .UseSimHash()                                  // stage 2, options can be changed in a lambda
+    .UseMinHash(o => o.Threshold = 0.85)           // stage 3
+    .Build();
+
+var report = await pipeline.DeduplicateAsync("handbook", chunks);
+```
+
+`UseSimHash` and `UseMinHash` switch a stage on and let you change its options. `UseSimHashIndex` and `UseMinHashIndex` are different: they hand the pipeline your own index (for example one backed by a database) instead of the in memory one. With dependency injection set `options.SimHash.Enabled` and `options.MinHash.Enabled` inside `AddRechunk`.
+
+A few things worth knowing:
+
+- SimHash is quick but rough. A one word edit in a long chunk can be 2 bits away, and in a short chunk it can be 5 or more. That is why MinHash confirms SimHash by default.
+- MinHash compares the word triples of two chunks. Its estimate is the share of equal slots in the two signatures, so with 128 slots it is off by about 0.04 either way. It is a good fit for "is this about 90 percent the same", not for hairline calls around the threshold.
+- LSH only looks at chunks that share a band. Bands and rows are worked out from the threshold when you do not set them (9 bands of 14 rows for 128 slots and 0.85). A pair at similarity s becomes a candidate with probability 1 - (1 - s^14)^9, and the curve is steepest near (1/9)^(1/14) = 0.855. Every candidate is then checked with the real estimate, so the index can miss a pair but does not add false ones.
+- A chunk that is skipped as a near duplicate is not added to the near indexes. The chunk it matched stands for it. So a long chain of small edits (A, then B close to A, then C close to B but not to A) is not followed.
+- Chunks with fewer than 8 words (`SimHash.MinWords`, `MinHash.MinWords`) are only matched exactly. Case is not folded, so "Notice" and "notice" differ for the exact stage.
+- Two callers sending nearly the same chunk at the same moment can both be treated as new. Exact repeats are always settled correctly by the exact index.
+
+## Synthetic measurement
+
+This is made up text, not real documents, so read it as a check that the stages do what they should and not as a result you can expect on your data. The corpus is 4000 chunks of 60 to 150 pseudo words, plus 1500 planted variants (5500 chunks in all), 300 of each kind: the same text with extra whitespace, one word changed, about 2 percent of the words changed, about 5 percent changed, and a changed number or an added "not". A planted variant should be merged when its exact Jaccard to the original is at least 0.85 and the guard does not apply, which is 900 of them. Fixed seed, so the numbers repeat.
+
+| setting | embedding calls | saved | exact / SimHash / MinHash | precision | recall | wrong merges |
+| --- | --- | --- | --- | --- | --- | --- |
+| exact only | 5200 | 300 | 300 / 0 / 0 | 100.0% | 33.3% | 0 |
+| exact + SimHash (3 bits) | 5098 | 402 | 300 / 102 / 0 | 99.8% | 44.6% | 1 |
+| exact + SimHash (6 bits) | 4814 | 686 | 300 / 386 / 0 | 97.5% | 74.3% | 17 |
+| exact + MinHash | 4666 | 834 | 300 / 0 / 534 | 99.5% | 92.2% | 4 |
+| all three, SimHash trusted | 4660 | 840 | 300 / 102 / 438 | 99.4% | 92.8% | 5 |
+| all three, MinHash confirms SimHash | 4663 | 837 | 300 / 99 / 438 | 99.5% | 92.6% | 4 |
+
+What I take from it:
+
+- SimHash with a strict distance catches few of the planted edits (80 of 300 single word edits, 21 of 300 two percent edits). Loosening it to 6 bits catches more but starts to merge things it should not.
+- MinHash does most of the work: 295 of 300 single word edits and about 235 to 240 of 300 two percent edits. The misses are mostly pairs whose true similarity sits close to 0.85.
+- The guard held: none of the 300 changed numbers or added "not" variants were merged in any setting.
+- The wrong merges for the MinHash settings are loose variants (about 5 percent edited) whose true Jaccard is a little under 0.85 and whose estimate came out above it.
+- Adding SimHash on top of MinHash saves very little here (3 more skipped chunks) and its confirmation step costs a bit of time. On this corpus MinHash alone is nearly as good. It may be different on long documents with many chunks, which this does not test.
+- Timing for the whole run on the machine I used was well under a second per setting (roughly 15 to 80 microseconds per chunk including the pipeline). That is a rough figure from one run, not a benchmark.
+
+To repeat it: `dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- --synthetic`
+
 ## Planned features
 
-- three stage dedup: exact hash, then a SimHash filter, then MinHash with LSH to confirm, with thresholds you can set
+- tuning the thresholds on a public document set, and a persistent index for the near duplicate stages
 - revision aware updates: only re-embed chunks that changed and delete stale vectors without leaving orphans
 - audit trail per chunk: version, source, time and embedding model
 - deletion by document or source (right to erasure) and logs that never contain chunk text
@@ -54,7 +102,7 @@ dotnet build -c Release
 dotnet test -c Release
 ```
 
-To time the SimHash code: `dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- --filter "*SimHash*"`
+To time the SimHash and MinHash code: `dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- --filter "*SimHash*"` (or `"*MinHash*"`). Add `--job dry` for a quick check.
 
 To try the sample: `dotnet run --project samples/Sample.Console`
 

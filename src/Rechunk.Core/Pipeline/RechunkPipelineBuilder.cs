@@ -7,6 +7,7 @@ public sealed class RechunkPipelineBuilder
     private readonly RechunkOptions _options = new();
     private IExactHashIndex? _exactIndex;
     private INearDuplicateIndex? _simHashIndex;
+    private IMinHashIndex? _minHashIndex;
     private ILogger? _logger;
 
     /// <summary>Stage 1 is always on. This is here so the setup reads the same as the other stages.</summary>
@@ -20,7 +21,7 @@ public sealed class RechunkPipelineBuilder
         return this;
     }
 
-    /// <summary>Stage 3. The MinHash code is not written yet, so enabling it throws when you use it.</summary>
+    /// <summary>Stage 3: near duplicates by MinHash and LSH. Off unless you call this.</summary>
     public RechunkPipelineBuilder UseMinHash(Action<MinHashOptions>? configure = null)
     {
         _options.MinHash.Enabled = true;
@@ -71,6 +72,13 @@ public sealed class RechunkPipelineBuilder
         return this;
     }
 
+    /// <summary>Use your own index for the MinHash stage. By default a MinHashLshIndex in memory is used.</summary>
+    public RechunkPipelineBuilder UseMinHashIndex(IMinHashIndex index)
+    {
+        _minHashIndex = index ?? throw new ArgumentNullException(nameof(index));
+        return this;
+    }
+
     public RechunkPipelineBuilder UseLogger(ILogger logger)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -78,5 +86,5 @@ public sealed class RechunkPipelineBuilder
     }
 
     public RechunkPipeline Build() =>
-        new(_options, new ChunkFingerprinter(_options), _exactIndex ?? new InMemoryExactHashIndex(), _logger, _simHashIndex);
+        new(_options, new ChunkFingerprinter(_options), _exactIndex ?? new InMemoryExactHashIndex(), _logger, _simHashIndex, _minHashIndex);
 }

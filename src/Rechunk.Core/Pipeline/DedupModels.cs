@@ -15,6 +15,7 @@ public enum DedupOutcome
 /// <summary>
 /// What happened to one chunk. Stage and DuplicateOf are set when it matched something.
 /// HammingDistance is set for a SimHash match (0 means the same SimHash, not the same text).
+/// EstimatedJaccard is set for a MinHash match, and for a SimHash match that MinHash looked at.
 /// </summary>
 public sealed record DedupDecision(
     ChunkInput Input,
@@ -22,7 +23,8 @@ public sealed record DedupDecision(
     DedupOutcome Outcome,
     MatchStage? Stage,
     ChunkId? DuplicateOf,
-    int? HammingDistance = null);
+    int? HammingDistance = null,
+    double? EstimatedJaccard = null);
 
 public sealed record DedupReport(string Scope, bool DryRun, IReadOnlyList<DedupDecision> Decisions)
 {

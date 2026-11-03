@@ -127,7 +127,7 @@ public class ExactStageTests
     {
         var options = new RechunkOptions();
         options.MinHash.Permutations = 128;
-        options.MinHash.Bands = 10;
+        options.MinHash.Bands = 20;
         options.MinHash.Rows = 10;
 
         Assert.Throws<ArgumentException>(() => options.Validate());
