@@ -25,6 +25,7 @@ public sealed class RechunkPipeline
     private readonly IExactHashIndex _exactIndex;
     private readonly INearDuplicateIndex? _simHashIndex;
     private readonly IMinHashIndex? _minHashIndex;
+    private readonly IFingerprintStore? _store;
     private readonly ILogger _logger;
 
     public RechunkPipeline(
@@ -33,40 +34,77 @@ public sealed class RechunkPipeline
         IExactHashIndex exactIndex,
         ILogger? logger = null,
         INearDuplicateIndex? simHashIndex = null,
-        IMinHashIndex? minHashIndex = null)
+        IMinHashIndex? minHashIndex = null,
+        IFingerprintStore? store = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _fingerprinter = fingerprinter ?? throw new ArgumentNullException(nameof(fingerprinter));
         _exactIndex = exactIndex ?? throw new ArgumentNullException(nameof(exactIndex));
         _logger = logger ?? NullLogger.Instance;
+        _store = store;
         options.Validate();
 
         if (options.SimHash.Enabled)
         {
-            _simHashIndex = simHashIndex ?? new SimHashBandIndex(options.SimHash.MaxHammingDistance);
+            _simHashIndex = simHashIndex ?? store?.SimHash ?? new SimHashBandIndex(options.SimHash.MaxHammingDistance);
         }
 
         if (options.MinHash.Enabled)
         {
-            _minHashIndex = minHashIndex ?? new MinHashLshIndex(options.MinHash);
+            _minHashIndex = minHashIndex ?? store?.MinHash ?? new MinHashLshIndex(options.MinHash);
         }
     }
 
+    public RechunkOptions Options => _options;
+
+    /// <summary>The shared fingerprint store, or null when the pipeline only uses its own indexes.</summary>
+    public IFingerprintStore? Store => _store;
+
     public static RechunkPipelineBuilder CreateBuilder() => new();
 
+    /// <summary>The id a chunk with this text gets. Same text after cleanup, same id.</summary>
+    public ChunkId IdFor(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        return ChunkId.FromExactHash(_fingerprinter.Compute(text).ExactHash.Span);
+    }
+
     /// <summary>Looks at a batch of chunks and says which ones are new and which ones are repeats.</summary>
-    public async ValueTask<DedupReport> DeduplicateAsync(
-        string? scope, IReadOnlyList<ChunkInput> chunks, CancellationToken ct = default)
+    public ValueTask<DedupReport> DeduplicateAsync(
+        string? scope, IReadOnlyList<ChunkInput> chunks, CancellationToken ct = default) =>
+        DeduplicateCoreAsync(scope, chunks, null, ct);
+
+    /// <summary>
+    /// Same, for a pipeline with a shared store. New chunks are claimed (pending) for the holder instead of being
+    /// remembered right away. Commit the claims in the report once the vectors are written, release them if it failed.
+    /// A holder that asks again for the same chunk (a retry) gets the claim back.
+    /// </summary>
+    public ValueTask<DedupReport> DeduplicateAsync(
+        string? scope, IReadOnlyList<ChunkInput> chunks, DedupClaimOptions claim, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(claim);
+        return DeduplicateCoreAsync(scope, chunks, claim, ct);
+    }
+
+    private async ValueTask<DedupReport> DeduplicateCoreAsync(
+        string? scope, IReadOnlyList<ChunkInput> chunks, DedupClaimOptions? claimOptions, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(chunks);
         scope ??= _options.DefaultScope;
+        var holder = claimOptions?.Holder ?? "run-" + Guid.NewGuid().ToString("N");
+        var lease = claimOptions?.Lease ?? _options.Store.LeaseDuration;
 
         // In a dry run nothing is written to the indexes, so repeats inside the batch are tracked here.
         var dryRunExact = new Dictionary<string, ChunkId>();
-        var dryRunSimHash = _options.DryRun && _simHashIndex is not null
+        // With a shared store the same overlays hold the chunks claimed in this batch, because the store only knows
+        // about chunks that are committed.
+        var overlays = _options.DryRun || _store is not null;
+        var batchIds = new HashSet<string>();
+        var batchEmbedded = new HashSet<string>();
+        var dryRunSimHash = overlays && _simHashIndex is not null
             ? new SimHashBandIndex(_options.SimHash.MaxHammingDistance)
             : null;
-        var dryRunMinHash = _options.DryRun && _minHashIndex is not null
+        var dryRunMinHash = overlays && _minHashIndex is not null
             ? new MinHashLshIndex(_options.MinHash)
             : null;
 
@@ -94,6 +132,16 @@ public sealed class RechunkPipeline
                 continue;
             }
 
+            if (_store is not null && !_options.DryRun && batchIds.Contains(id.Value))
+            {
+                // the same text twice in one batch, the first one is handling it
+                decisions.Add(Repeat(chunk, id, MatchStage.Exact, id, null, null));
+                LogMatch(chunk, MatchStage.Exact, id, null, null);
+                continue;
+            }
+
+            ChunkClaim? claim = null;
+
             // Stages 2 and 3: have we seen something very close to it?
             var near = await FindNearAsync(scope, fingerprint, dryRunSimHash, dryRunMinHash, chunk, ct).ConfigureAwait(false);
 
@@ -108,6 +156,47 @@ public sealed class RechunkPipeline
                 if (embedded)
                 {
                     AddToNearIndexes(id, scope, fingerprint, dryRunSimHash, dryRunMinHash);
+                }
+            }
+            else if (_store is not null)
+            {
+                var claimed = await _store.ClaimAsync(
+                    new ClaimRequest(scope, id, fingerprint.ExactHash, holder, lease), ct).ConfigureAwait(false);
+
+                if (claimed.Status == ClaimStatus.InFlight)
+                {
+                    decisions.Add(new DedupDecision(chunk, id, DedupOutcome.InFlight, MatchStage.Exact, claimed.Owner));
+                    _logger.LogDebug(
+                        "Chunk {Ordinal} is being handled by another worker ({Existing}), try again later",
+                        chunk.Ordinal, Short(claimed.Owner.Value));
+                    continue;
+                }
+
+                if (!claimed.Won)
+                {
+                    // finished by another worker between our lookup and the claim
+                    decisions.Add(Repeat(chunk, id, MatchStage.Exact, claimed.Owner, null, null));
+                    LogMatch(chunk, MatchStage.Exact, claimed.Owner, null, null);
+                    continue;
+                }
+
+                batchIds.Add(id.Value);
+                if (embedded)
+                {
+                    claim = new ChunkClaim(scope, id, fingerprint.ExactHash, holder, fingerprint);
+                    batchEmbedded.Add(id.Value);
+                    AddToNearIndexes(id, scope, fingerprint, dryRunSimHash, dryRunMinHash);
+                }
+                else if (batchEmbedded.Contains(near!.Existing.Value))
+                {
+                    // close to a chunk of this same batch that is not committed yet, so this one has to wait for it
+                    claim = new ChunkClaim(scope, id, fingerprint.ExactHash, holder, fingerprint, near.Existing);
+                }
+                else
+                {
+                    // not embedded, so nothing to wait for: the hash is final and points at the chunk that stands for it
+                    await _store.CommitAsync(
+                        new CommitRequest(scope, id, fingerprint.ExactHash, holder, near!.Existing), ct).ConfigureAwait(false);
                 }
             }
             else
@@ -137,11 +226,11 @@ public sealed class RechunkPipeline
 
             if (near is null)
             {
-                decisions.Add(new DedupDecision(chunk, id, DedupOutcome.Unique, null, null));
+                decisions.Add(new DedupDecision(chunk, id, DedupOutcome.Unique, null, null, Claim: claim));
                 continue;
             }
 
-            decisions.Add(Repeat(chunk, id, near.Stage, near.Existing, near.HammingDistance, near.EstimatedJaccard));
+            decisions.Add(Repeat(chunk, id, near.Stage, near.Existing, near.HammingDistance, near.EstimatedJaccard) with { Claim = claim });
             LogMatch(chunk, near.Stage, near.Existing, near.HammingDistance, near.EstimatedJaccard);
         }
 

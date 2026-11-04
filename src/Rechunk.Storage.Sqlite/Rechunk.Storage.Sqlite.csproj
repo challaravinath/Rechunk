@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>SQLite storage for Rechunk state, audit log and indexes. Early work in progress.</Description>
+    <Description>SQLite storage for the Rechunk shared fingerprint store and dead letters.</Description>
   </PropertyGroup>
 
   <ItemGroup>

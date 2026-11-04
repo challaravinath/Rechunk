@@ -9,6 +9,12 @@ public sealed class RechunkOptions
 
     public MinHashOptions MinHash { get; } = new();
 
+    /// <summary>Claims and leases, used when the pipeline has a shared fingerprint store.</summary>
+    public SharedStoreOptions Store { get; } = new();
+
+    /// <summary>Retries and dead letters, used by the ChunkIngestor.</summary>
+    public FailureOptions Failures { get; } = new();
+
     public DuplicatePolicy OnDuplicate { get; set; } = DuplicatePolicy.Alias;
 
     public RevisionPolicy OnRevision { get; set; } = RevisionPolicy.ReEmbedChanged;
@@ -39,6 +45,21 @@ public sealed class RechunkOptions
         if (SimHash.MinWords < 1)
         {
             throw new ArgumentOutOfRangeException(nameof(SimHash), "MinWords has to be at least 1.");
+        }
+
+        if (Store.LeaseDuration <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(Store), "LeaseDuration has to be above zero.");
+        }
+
+        if (Failures.MaxAttempts < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(Failures), "MaxAttempts has to be at least 1.");
+        }
+
+        if (Failures.RetryDelay < TimeSpan.Zero || Failures.RetryBackoff < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(Failures), "RetryDelay can not be negative and RetryBackoff has to be at least 1.");
         }
 
         if (MinHash.Permutations <= 0)
@@ -132,4 +153,35 @@ public sealed class MinHashOptions
     public int? Bands { get; set; }
 
     public int? Rows { get; set; }
+}
+
+public sealed class SharedStoreOptions
+{
+    /// <summary>
+    /// How long a claimed chunk stays reserved. Make it longer than the slowest embedding plus vector write you
+    /// expect, and much longer than the clock difference between your workers. If a worker dies, other workers can
+    /// take the chunk over once this has passed.
+    /// </summary>
+    public TimeSpan LeaseDuration { get; set; } = TimeSpan.FromMinutes(5);
+}
+
+public sealed class FailureOptions
+{
+    /// <summary>Tries for one chunk, the first one included. After that it goes to the dead letter store.</summary>
+    public int MaxAttempts { get; set; } = 3;
+
+    /// <summary>Wait before the second try. Zero means no wait.</summary>
+    public TimeSpan RetryDelay { get; set; } = TimeSpan.FromSeconds(1);
+
+    /// <summary>The wait is multiplied by this for every further try.</summary>
+    public double RetryBackoff { get; set; } = 2;
+
+    /// <summary>
+    /// Off by default, so a dead letter says which chunk failed and why but never holds its text.
+    /// Switch it on if you want to replay without going back to the source.
+    /// </summary>
+    public bool StoreTextInDeadLetters { get; set; }
+
+    /// <summary>Longest reason that is saved with a dead letter. Longer ones are cut.</summary>
+    public int MaxReasonLength { get; set; } = 300;
 }
