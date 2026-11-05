@@ -244,18 +244,7 @@ public sealed class MinHashLshIndex : IMinHashIndex
         }
     }
 
-    // the slots of one band folded into one 64 bit key. A clash only means one extra comparison.
-    private ulong BandKey(ReadOnlySpan<uint> signature, int band)
-    {
-        var h = 0xcbf29ce484222325UL;
-        var start = band * Rows;
-        for (var i = 0; i < Rows; i++)
-        {
-            h = StableHash64.Combine(h, signature[start + i]);
-        }
-
-        return h;
-    }
+    private ulong BandKey(ReadOnlySpan<uint> signature, int band) => Lsh.BandKey(signature, band);
 
     private void RemoveFromBuckets(Shard shard, Entry entry)
     {

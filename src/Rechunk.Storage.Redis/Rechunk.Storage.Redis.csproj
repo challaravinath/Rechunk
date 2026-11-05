@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <Description>Redis storage for the Rechunk shared fingerprint store and dead letters, so many workers check against the same indexes.</Description>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="StackExchange.Redis" />
+    <ProjectReference Include="..\Rechunk.Core\Rechunk.Core.csproj" />
+  </ItemGroup>
+
+</Project>

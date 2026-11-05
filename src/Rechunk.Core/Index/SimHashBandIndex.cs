@@ -21,9 +21,8 @@ namespace Rechunk;
 public sealed class SimHashBandIndex : INearDuplicateIndex
 {
     private readonly ConcurrentDictionary<string, Shard> _shards = new(StringComparer.Ordinal);
+    private readonly SimHashBandLayout _layout;
     private readonly int _bandCount;
-    private readonly int[] _shifts;
-    private readonly ulong[] _masks;
 
     public SimHashBandIndex(int maxHammingDistance = 3)
     {
@@ -33,21 +32,8 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
         }
 
         MaxHammingDistance = maxHammingDistance;
-        _bandCount = maxHammingDistance + 1;
-
-        // 64 bits over _bandCount slices. When it does not divide evenly the first slices get one bit more.
-        _shifts = new int[_bandCount];
-        _masks = new ulong[_bandCount];
-        var baseWidth = 64 / _bandCount;
-        var wider = 64 % _bandCount;
-        var shift = 0;
-        for (var i = 0; i < _bandCount; i++)
-        {
-            var width = baseWidth + (i < wider ? 1 : 0);
-            _shifts[i] = shift;
-            _masks[i] = width == 64 ? ulong.MaxValue : (1UL << width) - 1;
-            shift += width;
-        }
+        _layout = new SimHashBandLayout(maxHammingDistance);
+        _bandCount = _layout.BandCount;
     }
 
     public int MaxHammingDistance { get; }
@@ -184,7 +170,7 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
         return ValueTask.FromResult(Find(scope, fingerprint.SimHash));
     }
 
-    private ulong Slice(ulong hash, int band) => (hash >> _shifts[band]) & _masks[band];
+    private ulong Slice(ulong hash, int band) => _layout.Slice(hash, band);
 
     private void RemoveFromBuckets(Shard shard, Entry entry)
     {

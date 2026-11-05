@@ -26,15 +26,42 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton<IExactHashIndex, InMemoryExactHashIndex>();
         services.TryAddSingleton(sp => new SimHashBandIndex(sp.GetRequiredService<RechunkOptions>().SimHash.MaxHammingDistance));
         services.TryAddSingleton(sp => new MinHashLshIndex(sp.GetRequiredService<RechunkOptions>().MinHash));
-        services.TryAddSingleton(sp => new RechunkPipeline(
-            sp.GetRequiredService<RechunkOptions>(),
-            sp.GetRequiredService<IChunkFingerprinter>(),
-            sp.GetRequiredService<IExactHashIndex>(),
-            sp.GetService<ILogger<RechunkPipeline>>() ?? NullLogger<RechunkPipeline>.Instance,
-            sp.GetRequiredService<SimHashBandIndex>(),
-            sp.GetRequiredService<MinHashLshIndex>()));
+        services.TryAddSingleton<IDeadLetterStore, InMemoryDeadLetterStore>();
+        services.TryAddSingleton(sp =>
+        {
+            // A fingerprint store that is registered (by a storage package) takes over all three indexes.
+            // It is looked up here, not above, so it does not matter which package was added first.
+            var store = sp.GetService<IFingerprintStore>();
+            return new RechunkPipeline(
+                sp.GetRequiredService<RechunkOptions>(),
+                sp.GetRequiredService<IChunkFingerprinter>(),
+                store?.Exact ?? sp.GetRequiredService<IExactHashIndex>(),
+                sp.GetService<ILogger<RechunkPipeline>>() ?? NullLogger<RechunkPipeline>.Instance,
+                store?.SimHash ?? sp.GetRequiredService<SimHashBandIndex>(),
+                store?.MinHash ?? sp.GetRequiredService<MinHashLshIndex>(),
+                store);
+        });
+        services.TryAddSingleton(sp => new ChunkIngestor(
+            sp.GetRequiredService<RechunkPipeline>(),
+            sp.GetRequiredService<IChunkEmbedder>(),
+            sp.GetRequiredService<IVectorSink>(),
+            sp.GetRequiredService<IDeadLetterStore>(),
+            sp.GetService<ILogger<ChunkIngestor>>() ?? NullLogger<ChunkIngestor>.Instance,
+            sp.GetService<TimeProvider>()));
 
         return new RechunkBuilder(services);
+    }
+
+    /// <summary>
+    /// Keeps the fingerprints in this process, but with the same claim and commit steps as the shared backends.
+    /// Handy for tests and for trying the flow out. It is not shared between processes.
+    /// </summary>
+    public static IRechunkBuilder UseInMemoryFingerprintStore(this IRechunkBuilder builder)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        builder.Services.TryAddSingleton<IFingerprintStore>(sp =>
+            new InMemoryFingerprintStore(sp.GetRequiredService<RechunkOptions>(), sp.GetService<TimeProvider>()));
+        return builder;
     }
 
     private sealed class RechunkBuilder(IServiceCollection services) : IRechunkBuilder

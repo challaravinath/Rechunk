@@ -8,6 +8,7 @@ public sealed class RechunkPipelineBuilder
     private IExactHashIndex? _exactIndex;
     private INearDuplicateIndex? _simHashIndex;
     private IMinHashIndex? _minHashIndex;
+    private IFingerprintStore? _store;
     private ILogger? _logger;
 
     /// <summary>Stage 1 is always on. This is here so the setup reads the same as the other stages.</summary>
@@ -79,6 +80,24 @@ public sealed class RechunkPipelineBuilder
         return this;
     }
 
+    /// <summary>
+    /// Use a shared store for all three stages, so workers in different processes check against the same
+    /// fingerprints. Indexes you set yourself with the other Use methods still win for their stage.
+    /// </summary>
+    public RechunkPipelineBuilder UseFingerprintStore(IFingerprintStore store)
+    {
+        _store = store ?? throw new ArgumentNullException(nameof(store));
+        return this;
+    }
+
+    /// <summary>For the settings that have no method of their own, like the lease time and the retry settings.</summary>
+    public RechunkPipelineBuilder Configure(Action<RechunkOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(configure);
+        configure(_options);
+        return this;
+    }
+
     public RechunkPipelineBuilder UseLogger(ILogger logger)
     {
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
@@ -86,5 +105,12 @@ public sealed class RechunkPipelineBuilder
     }
 
     public RechunkPipeline Build() =>
-        new(_options, new ChunkFingerprinter(_options), _exactIndex ?? new InMemoryExactHashIndex(), _logger, _simHashIndex, _minHashIndex);
+        new(
+            _options,
+            new ChunkFingerprinter(_options),
+            _exactIndex ?? _store?.Exact ?? new InMemoryExactHashIndex(),
+            _logger,
+            _simHashIndex,
+            _minHashIndex,
+            _store);
 }

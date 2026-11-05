@@ -19,12 +19,14 @@ What works today:
 - a guard that keeps two chunks apart when their numbers or "not" style words differ, so "30 days" and "60 days" are not merged, in every stage
 - every decision records the stage that matched, which chunk it is a duplicate of, the SimHash distance and the Jaccard estimate
 - a small pipeline builder, DI setup, dry run mode
+- a shared fingerprint store, so many stateless workers check against the same exact hash, SimHash and MinHash indexes. A chunk is claimed first, committed after its vector is written and released if the work fails, so a failed chunk is never left marked as seen. The in memory indexes are still the default, and there are SQLite and Redis backends (see [docs/shared-store.md](docs/shared-store.md))
+- an ingestor that runs claim, embed, vector write and commit with retries, and writes a dead letter (no chunk text unless you ask for it) when a chunk keeps failing, with list and replay
 - the interfaces for the rest
 
 What is still stubs (they throw NotImplementedException with a TODO in the code):
 
 - revision tracking and clean deletes
-- the SQLite storage, the vector store writer, the Microsoft.Extensions.AI wrapper and the Semantic Kernel helper (these are just project shells for now)
+- the vector store writer, the Microsoft.Extensions.AI wrapper and the Semantic Kernel helper (these are just project shells for now)
 
 ## Using the stages
 
@@ -46,7 +48,27 @@ A few things worth knowing:
 - LSH only looks at chunks that share a band. Bands and rows are worked out from the threshold when you do not set them (9 bands of 14 rows for 128 slots and 0.85). A pair at similarity s becomes a candidate with probability 1 - (1 - s^14)^9, and the curve is steepest near (1/9)^(1/14) = 0.855. Every candidate is then checked with the real estimate, so the index can miss a pair but does not add false ones.
 - A chunk that is skipped as a near duplicate is not added to the near indexes. The chunk it matched stands for it. So a long chain of small edits (A, then B close to A, then C close to B but not to A) is not followed.
 - Chunks with fewer than 8 words (`SimHash.MinWords`, `MinHash.MinWords`) are only matched exactly. Case is not folded, so "Notice" and "notice" differ for the exact stage.
-- Two callers sending nearly the same chunk at the same moment can both be treated as new. Exact repeats are always settled correctly by the exact index.
+- Two callers sending nearly the same chunk at the same moment can both be treated as new, because a chunk only becomes visible to the near duplicate stages once it is committed. Exact repeats are always settled correctly, also with many workers, when you use a shared store.
+
+## Many workers and failures
+
+With the default in memory indexes one process knows what it has seen and nothing else does. For queue triggered workers (Azure Functions, containers that scale out) use a shared store, so every instance checks against the same indexes:
+
+```csharp
+services.AddRechunk(o =>
+    {
+        o.SimHash.Enabled = true;
+        o.MinHash.Enabled = true;
+        o.Store.LeaseDuration = TimeSpan.FromMinutes(5);
+        o.Failures.MaxAttempts = 3;
+    })
+    .AddRedisStorage("localhost:6379");     // or .AddSqliteStorage("Data Source=rechunk.db")
+
+// in the worker, with the queue message id as the holder
+var result = await ingestor.IngestAsync(new IngestRequest(tenant, documentId, chunks, Holder: message.Id));
+```
+
+`ChunkIngestor` claims the chunks, embeds them, writes the vectors and commits the claims. If a chunk fails more than `Failures.MaxAttempts` times it goes to the dead letter store with its id, scope, the stage that failed, a short reason, the attempt count and the time. `ReplayAsync` tries those again. The details, the guarantees and the limits are in [docs/shared-store.md](docs/shared-store.md), and `samples/Sample.AzureFunction` shows it with a queue trigger.
 
 ## Synthetic measurement
 
@@ -74,7 +96,7 @@ To repeat it: `dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- 
 
 ## Planned features
 
-- tuning the thresholds on a public document set, and a persistent index for the near duplicate stages
+- tuning the thresholds on a public document set
 - revision aware updates: only re-embed chunks that changed and delete stale vectors without leaving orphans
 - audit trail per chunk: version, source, time and embedding model
 - deletion by document or source (right to erasure) and logs that never contain chunk text
@@ -87,7 +109,8 @@ To repeat it: `dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- 
 | Package | What it is |
 | --- | --- |
 | Rechunk | the core library (project folder is src/Rechunk.Core) |
-| Rechunk.Storage.Sqlite | SQLite storage |
+| Rechunk.Storage.Sqlite | SQLite storage for the shared fingerprint store and dead letters |
+| Rechunk.Storage.Redis | Redis storage for the shared fingerprint store and dead letters |
 | Rechunk.Extensions.VectorData | writer for Microsoft.Extensions.VectorData collections |
 | Rechunk.Extensions.AI | wrapper for embedding generators |
 | Rechunk.SemanticKernel | Semantic Kernel helpers |
@@ -105,6 +128,8 @@ dotnet test -c Release
 To time the SimHash and MinHash code: `dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- --filter "*SimHash*"` (or `"*MinHash*"`). Add `--job dry` for a quick check.
 
 To try the sample: `dotnet run --project samples/Sample.Console`
+
+The Redis tests only run when `RECHUNK_REDIS` holds a connection string, for example `RECHUNK_REDIS=localhost:6379 dotnet test -c Release`. Without it they are reported as skipped. They use their own key prefix per test and remove their keys afterwards. The Azure Functions sample only needs to build, it does not need Azure: `dotnet build samples/Sample.AzureFunction`.
 
 ## License
 

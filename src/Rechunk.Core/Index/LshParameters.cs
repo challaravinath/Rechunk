@@ -25,6 +25,19 @@ public readonly record struct LshParameters(int Bands, int Rows)
     /// <summary>Chance that two chunks with this Jaccard similarity share at least one band.</summary>
     public double CandidateProbability(double similarity) => 1 - Math.Pow(1 - Math.Pow(similarity, Rows), Bands);
 
+    /// <summary>The slots of one band folded into one 64 bit key. A clash only means one extra comparison.</summary>
+    public ulong BandKey(ReadOnlySpan<uint> signature, int band)
+    {
+        var h = 0xcbf29ce484222325UL;
+        var start = band * Rows;
+        for (var i = 0; i < Rows; i++)
+        {
+            h = StableHash64.Combine(h, signature[start + i]);
+        }
+
+        return h;
+    }
+
     public static LshParameters Derive(int permutations, double threshold)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(permutations, 1);
