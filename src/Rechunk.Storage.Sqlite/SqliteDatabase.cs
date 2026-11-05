@@ -65,6 +65,7 @@ internal sealed class SqliteDatabase
             document    TEXT    NOT NULL,
             revision    INTEGER NOT NULL,
             updated_at  INTEGER NOT NULL,
+            source      TEXT,
             PRIMARY KEY (scope, document)
         ) WITHOUT ROWID;
 
@@ -98,11 +99,55 @@ internal sealed class SqliteDatabase
             alias   TEXT NOT NULL,
             PRIMARY KEY (scope, target, alias)
         ) WITHOUT ROWID;
+
+        CREATE TABLE IF NOT EXISTS rechunk_audit (
+            id        TEXT    NOT NULL PRIMARY KEY,
+            at_ms     INTEGER NOT NULL,
+            scope     TEXT    NOT NULL,
+            document  TEXT    NOT NULL,
+            chunk     TEXT    NOT NULL,
+            source    TEXT    NOT NULL,
+            kind      INTEGER NOT NULL,
+            body      TEXT    NOT NULL
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS ix_rechunk_audit_time ON rechunk_audit (at_ms, id);
+        CREATE INDEX IF NOT EXISTS ix_rechunk_audit_document ON rechunk_audit (document, at_ms);
+        CREATE INDEX IF NOT EXISTS ix_rechunk_audit_chunk ON rechunk_audit (chunk, at_ms);
+        CREATE INDEX IF NOT EXISTS ix_rechunk_audit_source ON rechunk_audit (source, at_ms);
+
+        CREATE TABLE IF NOT EXISTS rechunk_audit_finding (
+            type      TEXT NOT NULL,
+            event_id  TEXT NOT NULL,
+            PRIMARY KEY (type, event_id)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE IF NOT EXISTS rechunk_audit_outbox (
+            seq   INTEGER PRIMARY KEY AUTOINCREMENT,
+            id    TEXT    NOT NULL UNIQUE,
+            body  TEXT    NOT NULL
+        );
         """;
 
     // Changes for databases that an older version created. CREATE TABLE IF NOT EXISTS does not touch an existing table.
     private static void Migrate(SqliteConnection connection)
     {
+        if (!HasColumn(connection, "rechunk_doc", "source"))
+        {
+            try
+            {
+                Execute(connection, "ALTER TABLE rechunk_doc ADD COLUMN source TEXT;");
+            }
+            catch (SqliteException) when (HasColumn(connection, "rechunk_doc", "source"))
+            {
+                // another process added it between our check and our change
+            }
+        }
+
+        Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_doc_source ON rechunk_doc (scope, source, document);");
+        Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_doc_chunk_target ON rechunk_doc_chunk (scope, target);");
+        Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_doc_chunk_id ON rechunk_doc_chunk (scope, id);");
+
         if (!HasColumn(connection, "rechunk_dead_letter", "language"))
         {
             try

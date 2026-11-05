@@ -6,7 +6,7 @@ namespace Rechunk.Storage.Sqlite;
 public static class RechunkBuilderExtensions
 {
     /// <summary>
-    /// Keeps the fingerprints (exact hashes, SimHash bands, MinHash LSH), the dead letters and the document revisions in a SQLite file, so
+    /// Keeps the fingerprints (exact hashes, SimHash bands, MinHash LSH), the dead letters, the document revisions and the audit trail in a SQLite file, so
     /// they survive restarts and can be shared by workers on one machine. The file is created on first use.
     /// </summary>
     public static IRechunkBuilder AddSqliteStorage(this IRechunkBuilder builder, string connectionString)
@@ -25,6 +25,8 @@ public static class RechunkBuilderExtensions
                 sp.GetService<TimeProvider>())));
         builder.Services.Replace(ServiceDescriptor.Singleton<IDeadLetterStore>(_ => new SqliteDeadLetterStore(options)));
         builder.Services.Replace(ServiceDescriptor.Singleton<IRevisionStore>(_ => new SqliteRevisionStore(options)));
+        builder.Services.Replace(ServiceDescriptor.Singleton<IAuditLog>(_ => new SqliteAuditLog(options)));
+        builder.Services.Replace(ServiceDescriptor.Singleton<IAuditOutbox>(_ => new SqliteAuditOutbox(options)));
         return builder;
     }
 }

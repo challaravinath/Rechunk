@@ -10,7 +10,8 @@ public sealed record IngestRequest(
     IReadOnlyList<ChunkInput> Chunks,
     string? Holder = null,
     int Revision = 1,
-    IReadOnlySet<ChunkId>? NearExclude = null);
+    IReadOnlySet<ChunkId>? NearExclude = null,
+    string? Source = null);
 
 public enum ChunkStatus
 {
@@ -25,10 +26,25 @@ public enum ChunkStatus
 
     /// <summary>The chunk went to the dead letter store, or it waited for a chunk that did.</summary>
     Failed,
+
+    /// <summary>A PII finding with the Block policy kept the chunk out. Nothing of it was stored.</summary>
+    Blocked,
 }
 
-/// <summary>What became of one chunk of a request. Target is the id the chunk is stored under, which is the chunk's own id unless it is a duplicate.</summary>
-public sealed record ChunkOutcome(int Ordinal, ChunkId Id, ChunkId Target, string? Language, ChunkStatus Status);
+/// <summary>
+/// What became of one chunk of a request. Target is the id the chunk is stored under, which is the chunk's own id unless
+/// it is a duplicate. Matched is the chunk it was found to duplicate: set for a duplicate, and for a stored chunk that was
+/// flagged. Findings are the PII findings, types and spans only.
+/// </summary>
+public sealed record ChunkOutcome(
+    int Ordinal,
+    ChunkId Id,
+    ChunkId Target,
+    string? Language,
+    ChunkStatus Status,
+    ChunkId? Matched = null,
+    MatchStage? Stage = null,
+    IReadOnlyList<PiiHit>? Findings = null);
 
 public sealed record IngestResult(
     string Scope,
@@ -38,7 +54,8 @@ public sealed record IngestResult(
     int InFlight,
     IReadOnlyList<DeadLetter> DeadLetters,
     int LostClaims = 0,
-    IReadOnlyList<ChunkOutcome>? Chunks = null)
+    IReadOnlyList<ChunkOutcome>? Chunks = null,
+    int Blocked = 0)
 {
     /// <summary>One entry per chunk of the request, in the same order.</summary>
     public IReadOnlyList<ChunkOutcome> Outcomes => Chunks ?? Array.Empty<ChunkOutcome>();
@@ -68,6 +85,7 @@ public sealed class ChunkIngestor
     private readonly RechunkOptions _options;
     private readonly ILogger _logger;
     private readonly TimeProvider _time;
+    private readonly AuditWriter? _audit;
 
     public ChunkIngestor(
         RechunkPipeline pipeline,
@@ -75,8 +93,10 @@ public sealed class ChunkIngestor
         IVectorSink sink,
         IDeadLetterStore deadLetters,
         ILogger? logger = null,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        AuditWriter? audit = null)
     {
+        _audit = audit;
         _pipeline = pipeline ?? throw new ArgumentNullException(nameof(pipeline));
         _embedder = embedder ?? throw new ArgumentNullException(nameof(embedder));
         _sink = sink ?? throw new ArgumentNullException(nameof(sink));
@@ -192,18 +212,7 @@ public sealed class ChunkIngestor
 
         if (report is null)
         {
-            var failed = new List<ChunkOutcome>(request.Chunks.Count);
-            foreach (var chunk in request.Chunks)
-            {
-                var language = SafeLanguage(chunk);
-                var plain = _pipeline.IdFor(chunk.Text);
-                var id = language is null ? plain : new ChunkId(plain.Value + LanguageTags.IdSeparator + language);
-                deadLetters.Add(MakeDeadLetter(
-                    scope, id, request.Document, chunk, language, DeadLetterStage.Dedup, failure!, max));
-                failed.Add(new ChunkOutcome(chunk.Ordinal, id, id, language, ChunkStatus.Failed));
-            }
-
-            return new IngestResult(scope, holder, 0, 0, 0, deadLetters, 0, failed);
+            return await DedupFailedAsync(request, scope, holder, failure!, deadLetters, ct).ConfigureAwait(false);
         }
 
         var todo = report.Decisions
@@ -241,9 +250,82 @@ public sealed class ChunkIngestor
 
         var settled = await SettleAliasesAsync(report, committedIds).ConfigureAwait(false);
 
-        return new IngestResult(
+        var finished = new IngestResult(
             scope, holder, done, report.DuplicateCount, report.InFlightCount, deadLetters, lost,
-            Outcomes(report, committedIds, settled));
+            Outcomes(report, committedIds, settled), report.BlockedCount);
+        await WriteAuditAsync(request, scope, holder, finished, ct).ConfigureAwait(false);
+        return finished;
+    }
+
+    // Dedup itself failed. The chunks are scanned once more, if scanning is on, so nothing that came from the raw text is
+    // used for an id: with scanning on and the scan not working, the dead letter gets an id that comes from the position
+    // and holds no text.
+    private async ValueTask<IngestResult> DedupFailedAsync(
+        IngestRequest request, string scope, string holder, Exception failure, List<DeadLetter> deadLetters, CancellationToken ct)
+    {
+        var max = _options.Failures.MaxAttempts;
+        IReadOnlyList<ChunkInput> chunks = request.Chunks;
+        var safe = !_options.Pii.Enabled;
+        if (!safe)
+        {
+            try
+            {
+                chunks = await _pipeline.ScanAsync(request.Chunks, ct).ConfigureAwait(false);
+                safe = true;
+            }
+            catch (Exception ex) when (!IsCancelled(ex, ct))
+            {
+                _logger.LogWarning("The PII scan failed too, the dead letters will carry no text: {Error}", ex.GetType().Name);
+            }
+        }
+
+        var failed = new List<ChunkOutcome>(chunks.Count);
+        var blocked = 0;
+        foreach (var chunk in chunks)
+        {
+            if (chunk.Scan?.Blocked == true)
+            {
+                blocked++;
+                failed.Add(new ChunkOutcome(chunk.Ordinal, new ChunkId(string.Empty), new ChunkId(string.Empty), null, ChunkStatus.Blocked, Findings: chunk.PiiFindings));
+                continue;
+            }
+
+            var language = SafeLanguage(chunk);
+            ChunkId id;
+            ChunkInput stored = chunk;
+            if (safe)
+            {
+                var plain = _pipeline.IdFor(chunk.Text);
+                id = language is null ? plain : new ChunkId(plain.Value + LanguageTags.IdSeparator + language);
+            }
+            else
+            {
+                var seed = scope + "\n" + request.Document.Value + "\n" + request.Revision + "\n" + chunk.Ordinal;
+                var hash = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(seed));
+                id = new ChunkId("unscanned-" + Convert.ToHexString(hash, 0, 16).ToLowerInvariant());
+                stored = chunk with { Text = string.Empty };
+            }
+
+            deadLetters.Add(MakeDeadLetter(scope, id, request.Document, stored, language, DeadLetterStage.Dedup, failure, max, safe ? null : chunk.Text));
+            failed.Add(new ChunkOutcome(chunk.Ordinal, id, id, language, ChunkStatus.Failed));
+        }
+
+        var result = new IngestResult(scope, holder, 0, 0, 0, deadLetters, 0, failed, blocked);
+        await WriteAuditAsync(request, scope, holder, result, ct).ConfigureAwait(false);
+        return result;
+    }
+
+    private async ValueTask WriteAuditAsync(IngestRequest request, string scope, string holder, IngestResult result, CancellationToken ct)
+    {
+        if (_audit is null)
+        {
+            return;
+        }
+
+        var context = new AuditContext(
+            scope, request.Document, request.Revision, request.Source ?? string.Empty, _embedder.ModelId, "ingest",
+            _time.GetUtcNow(), _options.OnDuplicate);
+        await _audit.WriteAsync(AuditEvents.FromIngest(context, result), ct).ConfigureAwait(false);
     }
 
     // A chunk that is close to another chunk of the same batch waits for it: it is committed when that chunk is,
@@ -295,12 +377,16 @@ public sealed class ChunkIngestor
             switch (d.Outcome)
             {
                 case DedupOutcome.InFlight:
-                    outcome = new ChunkOutcome(d.Input.Ordinal, d.Id, d.Id, d.Language, ChunkStatus.InFlight);
+                    outcome = new ChunkOutcome(d.Input.Ordinal, d.Id, d.Id, d.Language, ChunkStatus.InFlight, Findings: d.Findings);
+                    break;
+                case DedupOutcome.Blocked:
+                    outcome = new ChunkOutcome(d.Input.Ordinal, d.Id, d.Id, d.Language, ChunkStatus.Blocked, Findings: d.Findings);
                     break;
                 case DedupOutcome.Unique or DedupOutcome.Flagged:
                     outcome = new ChunkOutcome(
                         d.Input.Ordinal, d.Id, d.Id, d.Language,
-                        committedIds.Contains(d.Id.Value) ? ChunkStatus.Stored : ChunkStatus.Failed);
+                        committedIds.Contains(d.Id.Value) ? ChunkStatus.Stored : ChunkStatus.Failed,
+                        d.Outcome == DedupOutcome.Flagged ? d.DuplicateOf : null, d.Stage, d.Findings);
                     break;
                 default:
                     var target = d.DuplicateOf ?? d.Id;
@@ -316,7 +402,8 @@ public sealed class ChunkIngestor
                     }
 
                     outcome = new ChunkOutcome(
-                        d.Input.Ordinal, d.Id, target, d.Language, ok ? ChunkStatus.Duplicate : ChunkStatus.Failed);
+                        d.Input.Ordinal, d.Id, target, d.Language, ok ? ChunkStatus.Duplicate : ChunkStatus.Failed,
+                        target, d.Stage, d.Findings);
                     break;
             }
 
@@ -483,7 +570,7 @@ public sealed class ChunkIngestor
     }
 
     private DeadLetter MakeDeadLetter(
-        string scope, ChunkId id, DocumentId document, ChunkInput chunk, string? language, DeadLetterStage stage, Exception error, int attempts) =>
+        string scope, ChunkId id, DocumentId document, ChunkInput chunk, string? language, DeadLetterStage stage, Exception error, int attempts, string? scrub = null) =>
         new(
             DeadLetterId(scope, id),
             scope,
@@ -491,7 +578,7 @@ public sealed class ChunkIngestor
             document,
             chunk.Ordinal,
             stage,
-            Describe(error, chunk.Text),
+            Describe(error, scrub ?? chunk.Text),
             attempts,
             _time.GetUtcNow(),
             _options.Failures.StoreTextInDeadLetters ? chunk.Text : null,

@@ -71,7 +71,7 @@ The order inside a sweep is: take the chunks, delete the vectors, forget the fin
 
 `DeleteDocumentAsync` is a revision with no chunks. The manifest stays, empty, and the chunks that nothing else uses are removed. A document can be written again afterwards and its chunks are embedded again.
 
-`EraseAsync` is the right to erasure version. It does the same, and also removes the dead letters of the document. The result counts the vectors deleted and the fingerprint rows and dead letters removed. It has to name a document: erasing everything from a source is not supported, and the call throws an `ArgumentException` if there is no document. If the erase can not finish because the document keeps changing, it throws an `InvalidOperationException` and you call it again.
+`EraseAsync` is the right to erasure version. It does the same, and also removes the dead letters of the document. The result counts the vectors deleted and the fingerprint rows and dead letters removed. It names a document, a source, or both (see [erasure.md](erasure.md), which also covers erasing by text, by chunk and by finding), and throws an `ArgumentException` if it names neither. If the erase can not finish because the document keeps changing, it throws an `InvalidOperationException` and you call it again.
 
 An audit event records each keep, embed, replace and delete with the revision, the embedding model and a reason, and never the text. Register an `IAuditLog` to get them (there is an `InMemoryAuditLog` for tests). If writing an audit event fails, the failure is logged and the revision is not undone.
 
@@ -118,5 +118,5 @@ All three revision stores (in memory, SQLite, Redis) run the same contract tests
 
 - Only documents you send through the tracker are tracked. Chunks that were ingested with `ChunkIngestor` on its own have no references, so a delete of a document does not know about them. `VerifyAsync` shows them as orphans.
 - A revision that is in progress looks like it has orphans to `VerifyAsync`. Run verify when the workers are quiet if you need a strict answer.
-- Erase by source is not supported.
+- Erase by source needs the document to have been revised with a source, see [erasure.md](erasure.md).
 - Vectors are matched to documents by chunk id. The sink has to key records by scope and id, as above, if you use more than one scope.

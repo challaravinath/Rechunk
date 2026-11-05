@@ -113,10 +113,11 @@ public sealed class SqliteRevisionStore : IRevisionStore
 
             var revision = currentRevision + 1;
             Run(connection, """
-                INSERT INTO rechunk_doc (scope, document, revision, updated_at) VALUES ($s, $d, $rev, $at)
-                ON CONFLICT (scope, document) DO UPDATE SET revision = $rev, updated_at = $at
+                INSERT INTO rechunk_doc (scope, document, revision, updated_at, source) VALUES ($s, $d, $rev, $at, $src)
+                ON CONFLICT (scope, document) DO UPDATE SET revision = $rev, updated_at = $at, source = COALESCE($src, source)
                 """,
-                ("$s", request.Scope), ("$d", request.Document.Value), ("$rev", revision), ("$at", request.At.UtcTicks));
+                ("$s", request.Scope), ("$d", request.Document.Value), ("$rev", revision), ("$at", request.At.UtcTicks),
+                ("$src", request.Source));
 
             return new CommitRevisionResult(CommitRevisionStatus.Committed, revision, orphaned, Array.Empty<ChunkId>());
         });
@@ -242,6 +243,93 @@ public sealed class SqliteRevisionStore : IRevisionStore
         return ValueTask.FromResult<IReadOnlyList<ChunkRef>>(list);
     }
 
+    public ValueTask<IReadOnlyList<DocumentRef>> ListDocumentsAsync(
+        string scope, string? source, string? afterDocument, int take, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        ct.ThrowIfCancellationRequested();
+        using var connection = _db.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = """
+            SELECT document, revision, source FROM rechunk_doc
+            WHERE scope = $s AND ($src IS NULL OR source = $src) AND ($after IS NULL OR document > $after)
+            ORDER BY document COLLATE BINARY LIMIT $take
+            """;
+        command.Parameters.AddWithValue("$s", scope);
+        command.Parameters.AddWithValue("$src", (object?)source ?? DBNull.Value);
+        command.Parameters.AddWithValue("$after", (object?)afterDocument ?? DBNull.Value);
+        command.Parameters.AddWithValue("$take", Math.Max(0, take));
+        return ValueTask.FromResult(ReadRefs(command));
+    }
+
+    public ValueTask<IReadOnlyList<DocumentRef>> ListDocumentsUsingAsync(
+        string scope, IReadOnlyCollection<ChunkId> chunks, string? afterDocument, int take, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        ArgumentNullException.ThrowIfNull(chunks);
+        ct.ThrowIfCancellationRequested();
+        if (chunks.Count == 0)
+        {
+            return ValueTask.FromResult<IReadOnlyList<DocumentRef>>(Array.Empty<DocumentRef>());
+        }
+
+        using var connection = _db.Open();
+
+        // a temp table instead of a long IN list, which hits the parameter limit when many chunks are erased at once
+        var table = "wanted_" + Guid.NewGuid().ToString("N");
+        SqliteDatabase.Execute(connection, $"CREATE TEMP TABLE {table} (chunk TEXT NOT NULL PRIMARY KEY) WITHOUT ROWID;");
+        try
+        {
+            using (var tx = connection.BeginTransaction())
+            {
+                using var insert = connection.CreateCommand();
+                insert.Transaction = tx;
+                insert.CommandText = $"INSERT OR IGNORE INTO {table} (chunk) VALUES ($c)";
+                var p = insert.CreateParameter();
+                p.ParameterName = "$c";
+                insert.Parameters.Add(p);
+                foreach (var chunk in chunks)
+                {
+                    p.Value = chunk.Value;
+                    insert.ExecuteNonQuery();
+                }
+
+                tx.Commit();
+            }
+
+            using var command = connection.CreateCommand();
+            command.CommandText = $"""
+                SELECT d.document, d.revision, d.source FROM rechunk_doc d
+                WHERE d.scope = $s AND ($after IS NULL OR d.document > $after)
+                  AND EXISTS (
+                    SELECT 1 FROM rechunk_doc_chunk c
+                    WHERE c.scope = d.scope AND c.document = d.document
+                      AND (c.target IN (SELECT chunk FROM {table}) OR c.id IN (SELECT chunk FROM {table})))
+                ORDER BY d.document COLLATE BINARY LIMIT $take
+                """;
+            command.Parameters.AddWithValue("$s", scope);
+            command.Parameters.AddWithValue("$after", (object?)afterDocument ?? DBNull.Value);
+            command.Parameters.AddWithValue("$take", Math.Max(0, take));
+            return ValueTask.FromResult(ReadRefs(command));
+        }
+        finally
+        {
+            SqliteDatabase.Execute(connection, $"DROP TABLE IF EXISTS {table};");
+        }
+    }
+
+    private static IReadOnlyList<DocumentRef> ReadRefs(SqliteCommand command)
+    {
+        var list = new List<DocumentRef>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            list.Add(new DocumentRef(new DocumentId(reader.GetString(0)), reader.GetInt32(1), reader.IsDBNull(2) ? null : reader.GetString(2)));
+        }
+
+        return list;
+    }
+
     private readonly record struct RefRow(int Count, ChunkRefState State, string Holder, long LeaseUntil);
 
     private static RefRow? ReadRef(SqliteConnection connection, string scope, string chunk)
@@ -260,9 +348,10 @@ public sealed class SqliteRevisionStore : IRevisionStore
     {
         int revision;
         long updated;
+        string? source;
         using (var command = connection.CreateCommand())
         {
-            command.CommandText = "SELECT revision, updated_at FROM rechunk_doc WHERE scope = $s AND document = $d";
+            command.CommandText = "SELECT revision, updated_at, source FROM rechunk_doc WHERE scope = $s AND document = $d";
             command.Parameters.AddWithValue("$s", scope);
             command.Parameters.AddWithValue("$d", document.Value);
             using var reader = command.ExecuteReader();
@@ -273,6 +362,7 @@ public sealed class SqliteRevisionStore : IRevisionStore
 
             revision = reader.GetInt32(0);
             updated = reader.GetInt64(1);
+            source = reader.IsDBNull(2) ? null : reader.GetString(2);
         }
 
         var entries = new List<ManifestEntry>();
@@ -298,7 +388,7 @@ public sealed class SqliteRevisionStore : IRevisionStore
             }
         }
 
-        return new DocumentManifest(scope, document, revision, entries, new DateTimeOffset(updated, TimeSpan.Zero));
+        return new DocumentManifest(scope, document, revision, entries, new DateTimeOffset(updated, TimeSpan.Zero), source);
     }
 
     private static void Run(SqliteConnection connection, string sql, params (string Name, object? Value)[] parameters)

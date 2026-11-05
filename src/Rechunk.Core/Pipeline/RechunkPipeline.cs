@@ -27,6 +27,7 @@ public sealed class RechunkPipeline
     private readonly IMinHashIndex? _minHashIndex;
     private readonly IFingerprintStore? _store;
     private readonly ILogger _logger;
+    private readonly PiiScanner _pii;
 
     public RechunkPipeline(
         RechunkOptions options,
@@ -43,6 +44,7 @@ public sealed class RechunkPipeline
         _logger = logger ?? NullLogger.Instance;
         _store = store;
         options.Validate();
+        _pii = new PiiScanner(options.Pii);
 
         if (options.SimHash.Enabled)
         {
@@ -76,10 +78,89 @@ public sealed class RechunkPipeline
         return LanguageTags.IdFor(_fingerprinter.Compute(chunk.Text).ExactHash.Span, LanguageFor(chunk));
     }
 
-    internal (ChunkId Id, string? Language) Identify(ChunkInput chunk)
+    /// <summary>
+    /// The id a chunk gets when it goes through the pipeline. With PII scanning on, the id comes from the masked text, so
+    /// use this and not <see cref="IdFor(ChunkInput)"/> to find a chunk that was stored.
+    /// </summary>
+    public async ValueTask<ChunkId> IdForAsync(ChunkInput chunk, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(chunk);
+        var (_, id, _) = await IdentifyAsync(chunk, ct).ConfigureAwait(false);
+        return id;
+    }
+
+    // Scans the chunk if that is on, then works out its id and language from what is left. Returns the scanned chunk too.
+    internal async ValueTask<(ChunkInput Chunk, ChunkId Id, string? Language)> IdentifyAsync(
+        ChunkInput chunk, CancellationToken ct = default)
+    {
+        chunk = (await PrepareAsync(new[] { chunk }, ct).ConfigureAwait(false))[0];
+        var (id, language) = IdentifyPrepared(chunk);
+        return (chunk, id, language);
+    }
+
+    // The id and language of a chunk that was scanned already, or that needs no scan.
+    internal (ChunkId Id, string? Language) IdentifyPrepared(ChunkInput chunk)
     {
         var language = _options.Language.Resolve(chunk.Language, chunk.Text);
         return (LanguageTags.IdFor(_fingerprinter.Compute(chunk.Text).ExactHash.Span, language), language);
+    }
+
+    /// <summary>
+    /// Runs the PII scan on a batch and returns the chunks as the pipeline will see them: masked where the policy says so,
+    /// with PiiFindings set. Nothing is stored or remembered. Does nothing when scanning is off.
+    /// </summary>
+    public async ValueTask<IReadOnlyList<ChunkInput>> ScanAsync(IReadOnlyList<ChunkInput> chunks, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(chunks);
+        return await PrepareAsync(chunks, ct).ConfigureAwait(false);
+    }
+
+    internal async ValueTask<IReadOnlyList<ChunkInput>> PrepareAsync(IReadOnlyList<ChunkInput> chunks, CancellationToken ct)
+    {
+        if (!_pii.Enabled)
+        {
+            return chunks;
+        }
+
+        return await _pii.ScanAsync(chunks, ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Looks for stored chunks that this text matches, without claiming or changing anything. The first result is the
+    /// exact match when there is one (Existing is the chunk the text points at, which is another chunk when the text was
+    /// an alias). With includeNear, chunks that are close by SimHash or MinHash follow. The text is masked the same way
+    /// as on the way in, so a text with a secret in it finds the chunk that was stored without it.
+    /// </summary>
+    public async ValueTask<IReadOnlyList<StoredMatch>> FindStoredAsync(
+        string? scope, ChunkInput chunk, bool includeNear = false, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(chunk);
+        scope ??= _options.DefaultScope;
+        var (prepared, id, language) = await IdentifyAsync(chunk, ct).ConfigureAwait(false);
+        var matches = new List<StoredMatch>();
+        if (prepared.Scan?.Blocked == true)
+        {
+            return matches;
+        }
+
+        var effective = LanguageTags.ScopeFor(scope, language);
+        var fingerprint = _fingerprinter.Compute(prepared.Text);
+        var exact = await _exactIndex.FindAsync(effective, fingerprint.ExactHash, ct).ConfigureAwait(false);
+        if (exact is { } owner)
+        {
+            matches.Add(new StoredMatch(id, owner, MatchStage.Exact, null, null, language));
+        }
+
+        if (includeNear)
+        {
+            var near = await FindNearAsync(effective, fingerprint, null, null, prepared, null, ct).ConfigureAwait(false);
+            if (near is not null && !(exact is { } o && o == near.Existing))
+            {
+                matches.Add(new StoredMatch(id, near.Existing, near.Stage, near.HammingDistance, near.EstimatedJaccard, language));
+            }
+        }
+
+        return matches;
     }
 
     /// <summary>The language the chunk is matched under: its own tag, else the detector, else null.</summary>
@@ -111,6 +192,7 @@ public sealed class RechunkPipeline
     {
         ArgumentNullException.ThrowIfNull(chunks);
         userScope ??= _options.DefaultScope;
+        chunks = await PrepareAsync(chunks, ct).ConfigureAwait(false);
         var excluded = claimOptions?.NearExclude;
         var languages = new List<string?>(chunks.Count);
         var holder = claimOptions?.Holder ?? "run-" + Guid.NewGuid().ToString("N");
@@ -142,6 +224,14 @@ public sealed class RechunkPipeline
             var language = _options.Language.Resolve(chunk.Language, chunk.Text);
             var scope = LanguageTags.ScopeFor(userScope, language);
             languages.Add(language);
+
+            if (chunk.Scan?.Blocked == true)
+            {
+                // never fingerprinted, claimed or stored. What is left of the chunk is already masked.
+                decisions.Add(new DedupDecision(chunk, new ChunkId(string.Empty), DedupOutcome.Blocked, null, null));
+                _logger.LogDebug("Chunk {Ordinal} was blocked by the PII policy ({Count} findings)", chunk.Ordinal, chunk.Scan.Hits.Count);
+                continue;
+            }
 
             var fingerprint = _fingerprinter.Compute(chunk.Text);
             var id = LanguageTags.IdFor(fingerprint.ExactHash.Span, language);

@@ -16,7 +16,22 @@ public enum DedupOutcome
     /// lease ends, by then it is either a duplicate or free to take.
     /// </summary>
     InFlight,
+
+    /// <summary>
+    /// A finding with the Block policy. The chunk is not fingerprinted, claimed, embedded or stored, and its Id is empty.
+    /// Input holds the text with the findings masked.
+    /// </summary>
+    Blocked,
 }
+
+/// <summary>A stored chunk that a text matched, see RechunkPipeline.FindStoredAsync. Id is the id the text itself gets.</summary>
+public sealed record StoredMatch(
+    ChunkId Id,
+    ChunkId Existing,
+    MatchStage Stage,
+    int? HammingDistance,
+    double? EstimatedJaccard,
+    string? Language);
 
 /// <summary>
 /// What happened to one chunk. Stage and DuplicateOf are set when it matched something.
@@ -35,7 +50,11 @@ public sealed record DedupDecision(
     int? HammingDistance = null,
     double? EstimatedJaccard = null,
     ChunkClaim? Claim = null,
-    string? Language = null);
+    string? Language = null)
+{
+    /// <summary>What the PII scan found, with the policy applied to each finding. Types and spans, never the values.</summary>
+    public IReadOnlyList<PiiHit> Findings => Input.PiiFindings ?? Array.Empty<PiiHit>();
+}
 
 public sealed record DedupReport(string Scope, bool DryRun, IReadOnlyList<DedupDecision> Decisions)
 {
@@ -44,6 +63,8 @@ public sealed record DedupReport(string Scope, bool DryRun, IReadOnlyList<DedupD
     public int DuplicateCount => Decisions.Count(d => d.Outcome == DedupOutcome.Duplicate);
 
     public int FlaggedCount => Decisions.Count(d => d.Outcome == DedupOutcome.Flagged);
+
+    public int BlockedCount => Decisions.Count(d => d.Outcome == DedupOutcome.Blocked);
 
     public int InFlightCount => Decisions.Count(d => d.Outcome == DedupOutcome.InFlight);
 

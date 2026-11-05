@@ -15,10 +15,14 @@ namespace Rechunk.Storage.Redis;
 public sealed class RedisRevisionStore : IRevisionStore
 {
     // States: 0 active, 1 orphaned, 2 retiring.
-    // KEYS: 1 document, 2 set of all chunks, 3 pending set, then a ref key for each added chunk, for each removed
-    // chunk, and an alias set for each alias.
+    // KEYS: 1 document, 2 set of all chunks, 3 pending set, 4 documents of the scope, 5 set of the source the document is
+    // in now (or a placeholder), 6 set of the source it moves to (or a placeholder), then a ref key for each added chunk,
+    // for each removed chunk, an alias set for each alias, then the chunk to documents sets to add this document to,
+    // then the ones to take it out of.
     // ARGV: 1 expected revision, 2 unused, 3 updated ticks, 4 entries as json, 5 added count, 6 removed count,
-    // 7 alias count, then the added chunk ids, the removed chunk ids and the aliases.
+    // 7 alias count, 8 chunk sets to add to, 9 chunk sets to leave, 10 document id, 11 new source ('' for none),
+    // 12 '1' when KEYS[5] is a real source set, 13 '1' when KEYS[6] is, then the added chunk ids, the removed chunk ids
+    // and the aliases.
     // Reply: status (0 committed, 1 conflict, 2 blocked), revision, list of chunk ids (orphaned, or blocking).
     private const string CommitScript = """
         local rev = tonumber(redis.call('HGET', KEYS[1], 'revision') or '0')
@@ -28,18 +32,21 @@ public sealed class RedisRevisionStore : IRevisionStore
         local nA = tonumber(ARGV[5])
         local nR = tonumber(ARGV[6])
         local nL = tonumber(ARGV[7])
+        local nCa = tonumber(ARGV[8])
+        local nCd = tonumber(ARGV[9])
+        local base = 13
         local blocking = {}
         for i = 1, nA do
-          if redis.call('HGET', KEYS[3 + i], 'state') == '2' then
-            blocking[#blocking + 1] = ARGV[7 + i]
+          if redis.call('HGET', KEYS[6 + i], 'state') == '2' then
+            blocking[#blocking + 1] = ARGV[base + i]
           end
         end
         if #blocking > 0 then
           return {2, rev, blocking}
         end
         for i = 1, nA do
-          local k = KEYS[3 + i]
-          local id = ARGV[7 + i]
+          local k = KEYS[6 + i]
+          local id = ARGV[base + i]
           redis.call('HINCRBY', k, 'count', 1)
           redis.call('HSET', k, 'state', '0')
           redis.call('SADD', KEYS[2], id)
@@ -47,8 +54,8 @@ public sealed class RedisRevisionStore : IRevisionStore
         end
         local orphaned = {}
         for j = 1, nR do
-          local k = KEYS[3 + nA + j]
-          local id = ARGV[7 + nA + j]
+          local k = KEYS[6 + nA + j]
+          local id = ARGV[base + nA + j]
           local c = tonumber(redis.call('HGET', k, 'count') or '0')
           if c > 0 then
             c = c - 1
@@ -61,7 +68,22 @@ public sealed class RedisRevisionStore : IRevisionStore
           end
         end
         for p = 1, nL do
-          redis.call('SADD', KEYS[3 + nA + nR + p], ARGV[7 + nA + nR + p])
+          redis.call('SADD', KEYS[6 + nA + nR + p], ARGV[base + nA + nR + p])
+        end
+        local doc = ARGV[10]
+        redis.call('ZADD', KEYS[4], 0, doc)
+        if ARGV[11] ~= '' then
+          if ARGV[12] == '1' and KEYS[5] ~= KEYS[6] then
+            redis.call('ZREM', KEYS[5], doc)
+          end
+          redis.call('ZADD', KEYS[6], 0, doc)
+          redis.call('HSET', KEYS[1], 'source', ARGV[11])
+        end
+        for q = 1, nCa do
+          redis.call('ZADD', KEYS[6 + nA + nR + nL + q], 0, doc)
+        end
+        for q = 1, nCd do
+          redis.call('ZREM', KEYS[6 + nA + nR + nL + nCa + q], doc)
         end
         redis.call('HSET', KEYS[1], 'revision', rev + 1, 'updated', ARGV[3], 'entries', ARGV[4])
         return {0, rev + 1, orphaned}
@@ -116,7 +138,7 @@ public sealed class RedisRevisionStore : IRevisionStore
     {
         ArgumentNullException.ThrowIfNull(scope);
         ct.ThrowIfCancellationRequested();
-        var fields = await Db.HashGetAsync(_keys.Doc(scope, document.Value), ["revision", "updated", "entries"]).ConfigureAwait(false);
+        var fields = await Db.HashGetAsync(_keys.Doc(scope, document.Value), ["revision", "updated", "entries", "source"]).ConfigureAwait(false);
         if (!fields[0].HasValue)
         {
             return null;
@@ -129,7 +151,8 @@ public sealed class RedisRevisionStore : IRevisionStore
             int.Parse((string)fields[0]!, CultureInfo.InvariantCulture),
             entries.Select(e => new ManifestEntry(
                 e.O, new ChunkId(e.I), new ChunkId(e.T), e.L, e.F, e.P, e.R is null ? null : new ChunkId(e.R))).ToList(),
-            new DateTimeOffset(long.Parse((string)fields[1]!, CultureInfo.InvariantCulture), TimeSpan.Zero));
+            new DateTimeOffset(long.Parse((string)fields[1]!, CultureInfo.InvariantCulture), TimeSpan.Zero),
+            fields[3].HasValue ? (string)fields[3]! : null);
     }
 
     public async ValueTask<CommitRevisionResult> CommitAsync(CommitRevisionRequest request, CancellationToken ct = default)
@@ -144,15 +167,29 @@ public sealed class RedisRevisionStore : IRevisionStore
         var (added, removed) = RevisionRules.Diff(current?.Entries, request.Entries);
         var aliases = request.Entries.Where(e => e.Id != e.Target).Select(e => (Target: e.Target.Value, Alias: e.Id.Value)).Distinct().ToList();
 
+        var oldKeys = (current?.Entries ?? Array.Empty<ManifestEntry>())
+            .SelectMany(e => new[] { e.Id.Value, e.Target.Value }).ToHashSet(StringComparer.Ordinal);
+        var newKeys = request.Entries.SelectMany(e => new[] { e.Id.Value, e.Target.Value }).ToHashSet(StringComparer.Ordinal);
+        var join = newKeys.Where(k => !oldKeys.Contains(k)).OrderBy(k => k, StringComparer.Ordinal).ToList();
+        var leave = oldKeys.Where(k => !newKeys.Contains(k)).OrderBy(k => k, StringComparer.Ordinal).ToList();
+
+        var docKey = _keys.Doc(request.Scope, request.Document.Value);
+        var hasOldSource = current?.Source is not null;
+        var hasNewSource = request.Source is not null;
         var keys = new List<RedisKey>
         {
-            _keys.Doc(request.Scope, request.Document.Value),
+            docKey,
             _keys.RefSet(request.Scope),
             _keys.Pending(request.Scope),
+            _keys.Docs(request.Scope),
+            hasOldSource ? _keys.SourceDocs(request.Scope, current!.Source!) : docKey,
+            hasNewSource ? _keys.SourceDocs(request.Scope, request.Source!) : docKey,
         };
         keys.AddRange(added.Select(t => _keys.Ref(request.Scope, t)));
         keys.AddRange(removed.Select(t => _keys.Ref(request.Scope, t)));
         keys.AddRange(aliases.Select(a => _keys.Aliases(request.Scope, a.Target)));
+        keys.AddRange(join.Select(c => _keys.ChunkDocs(request.Scope, c)));
+        keys.AddRange(leave.Select(c => _keys.ChunkDocs(request.Scope, c)));
 
         var json = JsonSerializer.Serialize(request.Entries.Select(e =>
             new EntryJson(e.Ordinal, e.Id.Value, e.Target.Value, e.Language, e.FirstRevision, e.PreviousOrdinal, e.Replaces?.Value)));
@@ -165,6 +202,12 @@ public sealed class RedisRevisionStore : IRevisionStore
             added.Count,
             removed.Count,
             aliases.Count,
+            join.Count,
+            leave.Count,
+            request.Document.Value,
+            request.Source ?? string.Empty,
+            hasOldSource ? "1" : "0",
+            hasNewSource ? "1" : "0",
         };
         args.AddRange(added.Select(t => (RedisValue)t));
         args.AddRange(removed.Select(t => (RedisValue)t));
@@ -252,6 +295,65 @@ public sealed class RedisRevisionStore : IRevisionStore
             if (fields[0].HasValue)
             {
                 list.Add(ToRef(new ChunkId(ids[i]), fields));
+            }
+        }
+
+        return list;
+    }
+
+    public async ValueTask<IReadOnlyList<DocumentRef>> ListDocumentsAsync(
+        string scope, string? source, string? afterDocument, int take, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        ct.ThrowIfCancellationRequested();
+        var key = source is null ? _keys.Docs(scope) : _keys.SourceDocs(scope, source);
+        var names = await LexPageAsync(key, afterDocument, take).ConfigureAwait(false);
+        return await RefsAsync(scope, names).ConfigureAwait(false);
+    }
+
+    public async ValueTask<IReadOnlyList<DocumentRef>> ListDocumentsUsingAsync(
+        string scope, IReadOnlyCollection<ChunkId> chunks, string? afterDocument, int take, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        ArgumentNullException.ThrowIfNull(chunks);
+        ct.ThrowIfCancellationRequested();
+
+        // the first few documents of the union are among the first few of each set
+        var pages = await Task.WhenAll(chunks.Select(c => c.Value).Distinct(StringComparer.Ordinal)
+            .Select(c => LexPageAsync(_keys.ChunkDocs(scope, c), afterDocument, take))).ConfigureAwait(false);
+        var names = pages.SelectMany(p => p).Distinct(StringComparer.Ordinal).OrderBy(n => n, StringComparer.Ordinal).Take(Math.Max(0, take)).ToList();
+        return await RefsAsync(scope, names).ConfigureAwait(false);
+    }
+
+    private async Task<List<string>> LexPageAsync(RedisKey key, string? after, int take)
+    {
+        if (take <= 0)
+        {
+            return new List<string>();
+        }
+
+        // member names that start with a bracket or a plus or minus are fine, they are escaped by the client as bytes
+        var min = after is null ? RedisValue.Null : (RedisValue)after;
+        var values = await Db.SortedSetRangeByValueAsync(
+            key, min, RedisValue.Null, after is null ? Exclude.None : Exclude.Start, Order.Ascending, 0, take).ConfigureAwait(false);
+        return values.Select(v => (string)v!).ToList();
+    }
+
+    private async Task<IReadOnlyList<DocumentRef>> RefsAsync(string scope, List<string> names)
+    {
+        var db = Db;
+        var reads = names.Select(n => db.HashGetAsync(_keys.Doc(scope, n), ["revision", "source"])).ToArray();
+        await Task.WhenAll(reads).ConfigureAwait(false);
+        var list = new List<DocumentRef>(names.Count);
+        for (var i = 0; i < names.Count; i++)
+        {
+            var fields = reads[i].Result;
+            if (fields[0].HasValue)
+            {
+                list.Add(new DocumentRef(
+                    new DocumentId(names[i]),
+                    int.Parse((string)fields[0]!, CultureInfo.InvariantCulture),
+                    fields[1].HasValue ? (string)fields[1]! : null));
             }
         }
 
