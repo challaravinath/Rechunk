@@ -7,7 +7,7 @@ namespace Rechunk.Storage.Redis;
 public static class RechunkBuilderExtensions
 {
     /// <summary>
-    /// Keeps the fingerprints, the dead letters and the document revisions in Redis, so every worker checks against the same indexes.
+    /// Keeps the fingerprints, the dead letters, the document revisions and the audit trail in Redis, so every worker checks against the same indexes.
     /// A connection is made from the configuration string, unless the app already registered an IConnectionMultiplexer.
     /// </summary>
     public static IRechunkBuilder AddRedisStorage(this IRechunkBuilder builder, Action<RedisStorageOptions>? configure = null)
@@ -28,6 +28,10 @@ public static class RechunkBuilderExtensions
             new RedisDeadLetterStore(sp.GetRequiredService<IConnectionMultiplexer>(), options)));
         builder.Services.Replace(ServiceDescriptor.Singleton<IRevisionStore>(sp =>
             new RedisRevisionStore(sp.GetRequiredService<IConnectionMultiplexer>(), options)));
+        builder.Services.Replace(ServiceDescriptor.Singleton<IAuditLog>(sp =>
+            new RedisAuditLog(sp.GetRequiredService<IConnectionMultiplexer>(), options)));
+        builder.Services.Replace(ServiceDescriptor.Singleton<IAuditOutbox>(sp =>
+            new RedisAuditOutbox(sp.GetRequiredService<IConnectionMultiplexer>(), options)));
         return builder;
     }
 

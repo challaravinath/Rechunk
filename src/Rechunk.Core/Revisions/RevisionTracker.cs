@@ -22,13 +22,13 @@ public sealed record SweepResult(IReadOnlyList<ChunkId> Retired, int Fingerprint
 /// It needs a fingerprint store on the pipeline (UseInMemoryFingerprintStore, or one of the storage packages), because
 /// forgetting a chunk means removing its shared fingerprints.
 /// </summary>
-public sealed class RevisionTracker : IRevisionTracker
+public sealed partial class RevisionTracker : IRevisionTracker
 {
     private readonly RechunkPipeline _pipeline;
     private readonly IFingerprintStore _fingerprints;
     private readonly IRevisionStore _store;
     private readonly IDeadLetterStore _deadLetters;
-    private readonly IAuditLog? _audit;
+    private readonly AuditWriter? _audit;
     private readonly RechunkOptions _options;
     private readonly ILogger _logger;
     private readonly TimeProvider _time;
@@ -39,7 +39,8 @@ public sealed class RevisionTracker : IRevisionTracker
         IDeadLetterStore deadLetters,
         IAuditLog? audit = null,
         ILogger? logger = null,
-        TimeProvider? time = null)
+        TimeProvider? time = null,
+        AuditWriter? writer = null)
     {
         _pipeline = pipeline ?? throw new ArgumentNullException(nameof(pipeline));
         _store = store ?? throw new ArgumentNullException(nameof(store));
@@ -48,10 +49,25 @@ public sealed class RevisionTracker : IRevisionTracker
             ?? throw new InvalidOperationException(
                 "Revision tracking needs a fingerprint store on the pipeline, so deleted chunks can be forgotten. "
                 + "Add one with UseInMemoryFingerprintStore() or one of the storage packages.");
-        _audit = audit;
         _options = pipeline.Options;
         _logger = logger ?? NullLogger.Instance;
         _time = time ?? TimeProvider.System;
+        _audit = writer ?? (audit is null ? null : new AuditWriter(audit, new InMemoryAuditOutbox(), _options.Audit, _logger, _time));
+    }
+
+    /// <summary>
+    /// Writes the audit events that could not be written when they happened (the audit log was down, so they wait in the
+    /// outbox). Returns how many are still waiting. It runs by itself at the start of every revision, erase and sweep.
+    /// </summary>
+    public async ValueTask<int> FlushAuditAsync(CancellationToken ct = default)
+    {
+        if (_audit is null)
+        {
+            return 0;
+        }
+
+        await _audit.DrainAsync(ct).ConfigureAwait(false);
+        return await _audit.PendingAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>The state of a document: its revision and the chunks in it, or null when it was never revised.</summary>
@@ -67,7 +83,7 @@ public sealed class RevisionTracker : IRevisionTracker
         var manifest = await _store.GetAsync(scope, document, ct).ConfigureAwait(false);
         var old = manifest?.Entries ?? Array.Empty<ManifestEntry>();
         var from = manifest?.Revision ?? 0;
-        var items = Identify(newChunks);
+        var items = (await IdentifyAsync(newChunks, ct).ConfigureAwait(false)).Items;
         var oldById = FirstById(old);
         var newIds = items.Select(i => i.Id.Value).ToHashSet(StringComparer.Ordinal);
         var oldByOrdinal = old.GroupBy(e => e.Ordinal).ToDictionary(g => g.Key, g => g.First());
@@ -97,12 +113,18 @@ public sealed class RevisionTracker : IRevisionTracker
         return new RevisionPlan(document, scope, from, unchanged ? from : from + 1, planned, dropped.Select(t => new ChunkId(t)).ToList());
     }
 
+    public ValueTask<RevisionResult> ApplyAsync(
+        RevisionPlan plan, IChunkEmbedder embedder, IVectorSink sink, CancellationToken ct = default) =>
+        ApplyAsync(plan, embedder, sink, null, ct);
+
+    /// <summary>Carries out a plan for a document that comes from the given source (see ReviseAsync).</summary>
     public async ValueTask<RevisionResult> ApplyAsync(
-        RevisionPlan plan, IChunkEmbedder embedder, IVectorSink sink, CancellationToken ct = default)
+        RevisionPlan plan, IChunkEmbedder embedder, IVectorSink sink, string? source, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(plan);
         var inputs = plan.Chunks.Select(c => c.Input).ToList();
-        var done = await ReviseCoreAsync(plan.Document, plan.Scope, inputs, embedder, sink, null, "revision", "no document uses it any more", ct)
+        var done = await ReviseCoreAsync(
+            plan.Document, plan.Scope, inputs, embedder, sink, null, "revision", AuditKind.Deleted, "no document uses it any more", source, ct)
             .ConfigureAwait(false);
         return done.Result;
     }
@@ -110,6 +132,8 @@ public sealed class RevisionTracker : IRevisionTracker
     /// <summary>
     /// Plan and apply in one go. The holder names this piece of work: pass the queue message id, so that if the worker
     /// dies and the message comes back, the retry gets its claims back. Without one a random holder is used.
+    /// The source names where the document comes from (a connector, a site, a bucket). It is kept with the document and
+    /// in the audit trail, and it is what an erase by source goes by.
     /// </summary>
     public async ValueTask<RevisionResult> ReviseAsync(
         DocumentId document,
@@ -118,11 +142,13 @@ public sealed class RevisionTracker : IRevisionTracker
         IChunkEmbedder embedder,
         IVectorSink sink,
         string? holder = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        string? source = null)
     {
         ArgumentNullException.ThrowIfNull(chunks);
         var done = await ReviseCoreAsync(
-            document, scope ?? _options.DefaultScope, chunks, embedder, sink, holder, "revision", "no document uses it any more", ct)
+            document, scope ?? _options.DefaultScope, chunks, embedder, sink, holder, "revision", AuditKind.Deleted,
+            "no document uses it any more", source, ct)
             .ConfigureAwait(false);
         return done.Result;
     }
@@ -132,37 +158,8 @@ public sealed class RevisionTracker : IRevisionTracker
         DocumentId document, string? scope, IChunkEmbedder embedder, IVectorSink sink, CancellationToken ct = default) =>
         ReviseAsync(document, scope, Array.Empty<ChunkInput>(), embedder, sink, null, ct);
 
-    /// <summary>
-    /// Right to erasure for one document. Removes its vectors, fingerprints and dead letters, and leaves a manifest with no
-    /// entries (no text). A chunk that another document uses is not deleted, it stays as long as that document does.
-    /// Erasing by source is not supported, name the document.
-    /// </summary>
-    public async ValueTask<EraseResult> EraseAsync(EraseRequest request, IVectorSink sink, CancellationToken ct = default)
-    {
-        ArgumentNullException.ThrowIfNull(request);
-        ArgumentNullException.ThrowIfNull(sink);
-        if (request.Document is not { } document)
-        {
-            throw new ArgumentException(
-                "An erase has to name a document. Erasing everything from a source is not supported, list the documents instead.",
-                nameof(request));
-        }
-
-        var scope = request.Scope ?? _options.DefaultScope;
-        var done = await ReviseCoreAsync(
-            document, scope, Array.Empty<ChunkInput>(), NoEmbedder.Instance, sink, null,
-            string.IsNullOrWhiteSpace(request.RequestedBy) ? "erase" : request.RequestedBy,
-            string.IsNullOrWhiteSpace(request.Reason) ? "erased on request" : request.Reason, ct).ConfigureAwait(false);
-
-        if (done.Result.Status is RevisionStatus.Conflict or RevisionStatus.Blocked)
-        {
-            throw new InvalidOperationException(
-                $"The document could not be erased because it kept changing or a chunk was busy ({done.Result.Status}). Try again.");
-        }
-
-        var rows = done.FingerprintRows + await RemoveDeadLettersAsync(scope, document, ct).ConfigureAwait(false);
-        return new EraseResult(done.Result.Deleted, rows);
-    }
+    /// <summary>The audit trail is only written when there is an audit log. Always false for a tracker without one.</summary>
+    public bool Audited => _audit is not null;
 
     public async ValueTask<VerifyReport> VerifyAsync(string scope, IVectorSink sink, CancellationToken ct = default)
     {
@@ -287,7 +284,7 @@ public sealed class RevisionTracker : IRevisionTracker
         return await _fingerprints.ForgetAsync(effective, claim.Chunk, hashes, ct).ConfigureAwait(false);
     }
 
-    private sealed record Done(RevisionResult Result, int FingerprintRows);
+    private sealed record Done(RevisionResult Result, int FingerprintRows, bool SweepFailed = false);
 
     private async ValueTask<Done> ReviseCoreAsync(
         DocumentId document,
@@ -296,18 +293,81 @@ public sealed class RevisionTracker : IRevisionTracker
         IChunkEmbedder embedder,
         IVectorSink sink,
         string? holder,
-        string auditSource,
+        string actor,
+        AuditKind deleteKind,
         string deleteReason,
+        string? source,
         CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(embedder);
         ArgumentNullException.ThrowIfNull(sink);
         ArgumentNullException.ThrowIfNull(scope);
+        ArgumentNullException.ThrowIfNull(inputs);
 
+        await DrainSafelyAsync(ct).ConfigureAwait(false);
+
+        // A revision that names no source keeps the one the document has.
+        if (string.IsNullOrEmpty(source))
+        {
+            source = (await _store.GetAsync(scope, document, ct).ConfigureAwait(false))?.Source;
+        }
+
+        // A scan that fails stops here: nothing has been stored, and the caller can try again.
+        var identified = await IdentifyAsync(inputs, ct).ConfigureAwait(false);
+        var done = await ReviseInnerAsync(
+            document, scope, identified.Items, embedder, sink, holder, actor, deleteKind, deleteReason, source ?? string.Empty, ct)
+            .ConfigureAwait(false);
+
+        if (identified.Blocked.Count > 0)
+        {
+            var at = done.Result.Status == RevisionStatus.Incomplete ? done.Result.Revision + 1 : done.Result.Revision;
+            var context = new AuditContext(scope, document, at, source ?? string.Empty, embedder.ModelId, actor, _time.GetUtcNow(), _options.OnDuplicate);
+            var events = identified.Blocked
+                .Select(b => AuditEvents.Make(
+                    context,
+                    new ChunkOutcome(b.Ordinal, new ChunkId(string.Empty), new ChunkId(string.Empty), null, ChunkStatus.Blocked, Findings: b.PiiFindings),
+                    AuditKind.Blocked, "kept out by the PII policy", AuditStages.Pii))
+                .ToList();
+            await WriteEventsAsync(events, ct).ConfigureAwait(false);
+        }
+
+        var pending = _audit is null ? 0 : await _audit.PendingAsync(ct).ConfigureAwait(false);
+        return done with { Result = done.Result with { PiiBlocked = identified.Blocked.Count, AuditPending = pending } };
+    }
+
+    private async ValueTask DrainSafelyAsync(CancellationToken ct)
+    {
+        if (_audit is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _audit.DrainAsync(ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
+        {
+            _logger.LogWarning("Could not drain the audit outbox: {Error}", ex.GetType().Name);
+        }
+    }
+
+    private async ValueTask<Done> ReviseInnerAsync(
+        DocumentId document,
+        string scope,
+        List<Item> items,
+        IChunkEmbedder embedder,
+        IVectorSink sink,
+        string? holder,
+        string actor,
+        AuditKind deleteKind,
+        string deleteReason,
+        string source,
+        CancellationToken ct)
+    {
         holder ??= "rev-" + Guid.NewGuid().ToString("N");
         var counting = new CountingEmbedder(embedder);
         var ingestor = new ChunkIngestor(_pipeline, counting, sink, _deadLetters, _logger, _time);
-        var items = Identify(inputs);
         var retries = _options.Revisions.MaxConflictRetries;
         var rows = 0;
 
@@ -324,7 +384,7 @@ public sealed class RevisionTracker : IRevisionTracker
                 // a document that is already as asked: still finish any delete a crashed worker left behind
                 var left = await SweepAsync(scope, sink, ct).ConfigureAwait(false);
                 rows += left.FingerprintRowsRemoved;
-                return new Done(new RevisionResult(0, items.Count, 0, 0, RevisionStatus.Unchanged, from), rows);
+                return new Done(new RevisionResult(0, items.Count, 0, 0, RevisionStatus.Unchanged, from), rows, left.Failed > 0);
             }
 
             var to = from + 1;
@@ -348,7 +408,7 @@ public sealed class RevisionTracker : IRevisionTracker
             if (fresh.Count > 0)
             {
                 ingest = await ingestor.IngestAsync(
-                    new IngestRequest(scope, document, fresh.Select(f => f.Input).ToList(), holder, to, exclude), ct)
+                    new IngestRequest(scope, document, fresh.Select(f => f.Input).ToList(), holder, to, exclude, source), ct)
                     .ConfigureAwait(false);
 
                 if (!ingest.IsComplete || ingest.Outcomes.Any(o => o.Status is ChunkStatus.InFlight or ChunkStatus.Failed))
@@ -358,6 +418,8 @@ public sealed class RevisionTracker : IRevisionTracker
                     _logger.LogWarning(
                         "Revision {Revision} of a document is not finished: {InFlight} chunks are with other workers, {Failed} failed",
                         to, inFlight, failedCount);
+                    await WriteEventsAsync(
+                        AuditEvents.FromIngest(Context(scope, document, to, source, embedder.ModelId, actor), ingest), ct).ConfigureAwait(false);
                     return new Done(new RevisionResult(
                         counting.Calls, kept.Count, 0, 0, RevisionStatus.Incomplete, from,
                         ingest.Outcomes.Count(o => o.Status == ChunkStatus.Stored), 0, inFlight, failedCount), rows);
@@ -398,22 +460,41 @@ public sealed class RevisionTracker : IRevisionTracker
                 entries.Add(new ManifestEntry(item.Input.Ordinal, item.Id, outcome.Target, item.Language, to, null, replaces));
             }
 
+            // An erase forgets the text of the aliases first. If that fails, the document is untouched and the erase can run again.
+            if (deleteKind == AuditKind.Erased)
+            {
+                rows += await ForgetDroppedAliasesAsync(scope, document, old, newIds, ct).ConfigureAwait(false);
+            }
+
             var commit = await _store.CommitAsync(
-                new CommitRevisionRequest(scope, document, from, entries, _time.GetUtcNow()), ct).ConfigureAwait(false);
+                new CommitRevisionRequest(scope, document, from, entries, _time.GetUtcNow(), string.IsNullOrEmpty(source) ? null : source), ct).ConfigureAwait(false);
 
             if (commit.Status == CommitRevisionStatus.Committed)
             {
                 var sweep = await SweepSafelyAsync(scope, sink, ct).ConfigureAwait(false);
                 rows += sweep.FingerprintRowsRemoved;
+                if (deleteKind != AuditKind.Erased)
+                {
+                    try
+                    {
+                        rows += await ForgetDroppedAliasesAsync(scope, document, old, newIds, ct).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
+                    {
+                        _logger.LogWarning("Could not forget the text of dropped duplicates, it stays until the chunk goes: {Error}", ex.GetType().Name);
+                    }
+                }
+
                 var deleted = sweep.Retired.Where(r => commit.Orphaned.Contains(r)).ToList();
 
-                await WriteAuditAsync(document, commit.Revision, embedder.ModelId, auditSource, deleteReason, entries, ingest, deleted, ct)
+                await WriteAppliedAuditAsync(
+                    Context(scope, document, commit.Revision, source, embedder.ModelId, actor), entries, ingest, deleted, deleteKind, deleteReason, ct)
                     .ConfigureAwait(false);
 
                 var skipped = ingest?.Outcomes.Count(o => o.Status == ChunkStatus.Duplicate) ?? 0;
                 var embedded = ingest?.Outcomes.Count(o => o.Status == ChunkStatus.Stored) ?? 0;
                 return new Done(new RevisionResult(
-                    counting.Calls, kept.Count, skipped, deleted.Count, RevisionStatus.Applied, commit.Revision, embedded, moved), rows);
+                    counting.Calls, kept.Count, skipped, deleted.Count, RevisionStatus.Applied, commit.Revision, embedded, moved), rows, sweep.Failed > 0);
             }
 
             if (commit.Status == CommitRevisionStatus.Blocked)
@@ -452,15 +533,16 @@ public sealed class RevisionTracker : IRevisionTracker
         }
     }
 
-    private async ValueTask WriteAuditAsync(
-        DocumentId document,
-        int revision,
-        string model,
-        string source,
-        string deleteReason,
+    private AuditContext Context(string scope, DocumentId document, int revision, string source, string model, string actor) =>
+        new(scope, document, revision, source, model, actor, _time.GetUtcNow(), _options.OnDuplicate);
+
+    private async ValueTask WriteAppliedAuditAsync(
+        AuditContext context,
         List<ManifestEntry> entries,
         IngestResult? ingest,
         List<ChunkId> deleted,
+        AuditKind deleteKind,
+        string deleteReason,
         CancellationToken ct)
     {
         if (_audit is null)
@@ -468,36 +550,35 @@ public sealed class RevisionTracker : IRevisionTracker
             return;
         }
 
-        var now = _time.GetUtcNow();
         var events = new List<AuditEvent>();
-        foreach (var entry in entries.Where(e => e.FirstRevision == revision))
+        if (ingest is not null)
         {
-            var outcome = ingest?.Outcomes.FirstOrDefault(o => o.Id == entry.Id);
-            var (action, reason) = outcome?.Status switch
-            {
-                ChunkStatus.Stored when entry.Replaces is not null => (ChunkAction.Replace, "text changed at this position"),
-                ChunkStatus.Stored => (ChunkAction.Embed, "new text"),
-                ChunkStatus.Duplicate when entry.Id != entry.Target => (ChunkAction.Alias, "close to a chunk that is stored"),
-                _ => (ChunkAction.Keep, "text was stored already"),
-            };
-            events.Add(new AuditEvent(entry.Id, document, revision, source, now, model, action, reason));
+            var replacing = entries.Where(e => e.Replaces is not null).Select(e => e.Id).ToHashSet();
+            events.AddRange(AuditEvents.FromIngest(context, ingest, replacing));
         }
 
-        events.AddRange(deleted.Select(d => new AuditEvent(d, document, revision, source, now, model, ChunkAction.Delete, deleteReason)));
+        var stage = deleteKind == AuditKind.Erased ? AuditStages.Erasure : AuditStages.Revision;
+        events.AddRange(deleted.Select(d => new AuditEvent(
+            d, context.Document, context.Revision, context.Source, context.At, context.Model, deleteKind, deleteReason)
+        {
+            Scope = context.Scope,
+            Language = LanguageTags.FromId(d),
+            Stage = stage,
+            Actor = context.Actor,
+        }));
 
-        try
+        await WriteEventsAsync(events, ct).ConfigureAwait(false);
+    }
+
+    // The writer retries and then parks what it can not write, and never throws after a commit.
+    private async ValueTask WriteEventsAsync(List<AuditEvent> events, CancellationToken ct)
+    {
+        if (_audit is null || events.Count == 0)
         {
-            foreach (var e in events)
-            {
-                await _audit.AppendAsync(e, ct).ConfigureAwait(false);
-            }
+            return;
         }
-        catch (Exception ex) when (!(ex is OperationCanceledException && ct.IsCancellationRequested))
-        {
-            // the revision is applied, so a failing audit log is reported and not allowed to undo it
-            _logger.LogError("The audit log did not take {Count} events for revision {Revision}: {Error}",
-                events.Count, revision, ex.GetType().Name);
-        }
+
+        await _audit.WriteAsync(events, ct).ConfigureAwait(false);
     }
 
     private async ValueTask<int> RemoveDeadLettersAsync(string scope, DocumentId document, CancellationToken ct)
@@ -525,17 +606,33 @@ public sealed class RevisionTracker : IRevisionTracker
 
     private sealed record Item(ChunkInput Input, ChunkId Id, string? Language);
 
-    private List<Item> Identify(IReadOnlyList<ChunkInput> chunks)
+    private sealed record Identified(List<Item> Items, List<ChunkInput> Blocked);
+
+    // Scans the chunks (when that is on), then works out the id of each from the text that is left. A chunk with a Block
+    // finding is not part of the document: it is returned in Blocked and never gets an id.
+    private async ValueTask<Identified> IdentifyAsync(IReadOnlyList<ChunkInput> chunks, CancellationToken ct)
     {
-        var list = new List<Item>(chunks.Count);
         foreach (var chunk in chunks)
         {
             ArgumentNullException.ThrowIfNull(chunk);
-            var (id, language) = _pipeline.Identify(chunk);
+        }
+
+        var prepared = await _pipeline.ScanAsync(chunks, ct).ConfigureAwait(false);
+        var list = new List<Item>(prepared.Count);
+        var blocked = new List<ChunkInput>();
+        foreach (var chunk in prepared)
+        {
+            if (chunk.Scan?.Blocked == true)
+            {
+                blocked.Add(chunk);
+                continue;
+            }
+
+            var (id, language) = _pipeline.IdentifyPrepared(chunk);
             list.Add(new Item(chunk, id, language));
         }
 
-        return list;
+        return new Identified(list, blocked);
     }
 
     private static Dictionary<string, ManifestEntry> FirstById(IReadOnlyList<ManifestEntry> entries)

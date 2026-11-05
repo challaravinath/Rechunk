@@ -89,9 +89,40 @@ public interface IRevisionTracker
     ValueTask<VerifyReport> VerifyAsync(string scope, IVectorSink sink, CancellationToken ct = default);
 }
 
+/// <summary>
+/// The audit trail. AppendAsync has to be idempotent on AuditEvent.Id: when an event with that id is stored already,
+/// nothing changes. That is what lets the outbox send an event again after a failure without writing it twice.
+/// QueryAsync returns oldest first (to the millisecond, then by event id) and honours Skip and Take.
+/// </summary>
 public interface IAuditLog
 {
     ValueTask AppendAsync(AuditEvent auditEvent, CancellationToken ct = default);
 
     IAsyncEnumerable<AuditEvent> QueryAsync(AuditQuery query, CancellationToken ct = default);
+
+    /// <summary>Appends several events. A log that can do this in one round trip should override it. The default appends one by one.</summary>
+    async ValueTask AppendManyAsync(IReadOnlyList<AuditEvent> events, CancellationToken ct = default)
+    {
+        foreach (var e in events)
+        {
+            await AppendAsync(e, ct).ConfigureAwait(false);
+        }
+    }
+}
+
+/// <summary>
+/// Holds audit events that could not be written, until they can be. The AuditWriter puts an event here after its retries
+/// ran out, and sends it again later. Keep it in the same place as your other state so it survives a restart.
+/// </summary>
+public interface IAuditOutbox
+{
+    ValueTask EnqueueAsync(IReadOnlyList<AuditEvent> events, CancellationToken ct = default);
+
+    /// <summary>Returns the oldest events that wait, up to max, without removing them.</summary>
+    ValueTask<IReadOnlyList<AuditEvent>> PeekAsync(int max, CancellationToken ct = default);
+
+    /// <summary>Removes events by id once they are written.</summary>
+    ValueTask RemoveAsync(IReadOnlyList<string> ids, CancellationToken ct = default);
+
+    ValueTask<int> CountAsync(CancellationToken ct = default);
 }

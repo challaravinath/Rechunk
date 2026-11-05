@@ -22,6 +22,36 @@ internal sealed class RedisKeys(string prefix)
 
     public RedisKey Aliases(string scope, string chunk) => $"{prefix}:{{{Tag(scope)}}}:a:{chunk}";
 
+    // the documents of a scope, a sorted set with equal scores so it can be paged by name
+    public RedisKey Docs(string scope) => $"{prefix}:{{{Tag(scope)}}}:ds";
+
+    // the documents of one source
+    public RedisKey SourceDocs(string scope, string source) => $"{prefix}:{{{Tag(scope)}}}:ss:{source}";
+
+    // the documents that have a chunk in their manifest, as the chunk itself or as the target of an alias
+    public RedisKey ChunkDocs(string scope, string chunk) => $"{prefix}:{{{Tag(scope)}}}:cd:{chunk}";
+
+    // the audit trail has one tag, it is read across scopes
+    public RedisKey AuditEvent(string id) => $"{prefix}:{{audit}}:e:{id}";
+
+    public RedisKey AuditAll => $"{prefix}:{{audit}}:a";
+
+    public RedisKey AuditScope(string scope) => $"{prefix}:{{audit}}:sc:{scope}";
+
+    public RedisKey AuditDocument(string document) => $"{prefix}:{{audit}}:d:{document}";
+
+    public RedisKey AuditChunk(string chunk) => $"{prefix}:{{audit}}:c:{chunk}";
+
+    public RedisKey AuditSource(string source) => $"{prefix}:{{audit}}:s:{source}";
+
+    public RedisKey AuditFinding(string type) => $"{prefix}:{{audit}}:f:{type}";
+
+    public RedisKey AuditOutbox => $"{prefix}:{{audit}}:ob";
+
+    public RedisKey AuditOutboxQueue => $"{prefix}:{{audit}}:obq";
+
+    public RedisKey AuditOutboxSeq => $"{prefix}:{{audit}}:obn";
+
     // every chunk the revision store knows
     public RedisKey RefSet(string scope) => $"{prefix}:{{{Tag(scope)}}}:rs";
 

@@ -130,4 +130,8 @@ public sealed class FlakyStore(IFingerprintStore inner) : IFingerprintStore
     public ValueTask<int> ForgetAsync(
         string scope, ChunkId owner, IReadOnlyList<ReadOnlyMemory<byte>> exactHashes, CancellationToken ct = default) =>
         inner.ForgetAsync(scope, owner, exactHashes, ct);
+
+    public ValueTask<int> ForgetExactAsync(
+        string scope, ChunkId owner, IReadOnlyList<ReadOnlyMemory<byte>> exactHashes, CancellationToken ct = default) =>
+        inner.ForgetExactAsync(scope, owner, exactHashes, ct);
 }

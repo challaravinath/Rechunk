@@ -22,21 +22,27 @@ public sealed record DocumentManifest(
     DocumentId Document,
     int Revision,
     IReadOnlyList<ManifestEntry> Entries,
-    DateTimeOffset UpdatedAt)
+    DateTimeOffset UpdatedAt,
+    string? Source = null)
 {
     public bool IsDeleted => Entries.Count == 0;
 }
 
 /// <summary>
 /// Moves a document to the next revision. ExpectedRevision is the revision the caller based its plan on (0 for a document
-/// that has no manifest yet). Empty entries delete the document.
+/// that has no manifest yet). Empty entries delete the document. Source names where the document comes from. Null keeps
+/// the source the document has.
 /// </summary>
 public sealed record CommitRevisionRequest(
     string Scope,
     DocumentId Document,
     int ExpectedRevision,
     IReadOnlyList<ManifestEntry> Entries,
-    DateTimeOffset At);
+    DateTimeOffset At,
+    string? Source = null);
+
+/// <summary>A document in the revision store: its revision and where it came from (null when it was never given a source).</summary>
+public sealed record DocumentRef(DocumentId Document, int Revision, string? Source);
 
 public enum CommitRevisionStatus
 {
@@ -113,4 +119,20 @@ public interface IRevisionStore
 
     /// <summary>Every chunk the store knows in this scope, whatever its state.</summary>
     ValueTask<IReadOnlyList<ChunkRef>> ListRefsAsync(string scope, CancellationToken ct = default);
+
+    /// <summary>
+    /// The documents of a scope in the order of their ids, after the given one, at most take of them. With a source only
+    /// the documents of that source, whether they are deleted or not. Needed to erase by source.
+    /// </summary>
+    ValueTask<IReadOnlyList<DocumentRef>> ListDocumentsAsync(
+        string scope, string? source, string? afterDocument, int take, CancellationToken ct = default) =>
+        throw new NotSupportedException("This revision store can not list documents, so it can not erase by source.");
+
+    /// <summary>
+    /// The documents whose current revision has an entry with one of these ids, as its own id or as its target, in the
+    /// order of their ids, after the given one, at most take of them. Needed to erase chunks that were found by text or finding.
+    /// </summary>
+    ValueTask<IReadOnlyList<DocumentRef>> ListDocumentsUsingAsync(
+        string scope, IReadOnlyCollection<ChunkId> chunks, string? afterDocument, int take, CancellationToken ct = default) =>
+        throw new NotSupportedException("This revision store can not look up the documents that use a chunk, so it can not erase chunks.");
 }

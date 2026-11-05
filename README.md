@@ -23,6 +23,9 @@ What works today:
 - an ingestor that runs claim, embed, vector write and commit with retries, and writes a dead letter (no chunk text unless you ask for it) when a chunk keeps failing, with list and replay
 - revision tracking and clean deletes: a new version of a document only embeds the chunks that changed, keeps moved paragraphs as they are, and removes the vectors and fingerprints of chunks that are gone, safely with many workers (see [docs/revisions.md](docs/revisions.md))
 - a language tag per chunk, so chunks in different languages are never merged, and character shingles for Chinese, Japanese and Thai, so near duplicates are found in text without spaces (see [docs/languages.md](docs/languages.md))
+- a persistent audit trail (in memory, SQLite and Redis, one contract test suite for all three): one event per chunk for new, skipped, aliased, flagged, revised, deleted, erased and dead lettered, with document, revision, stage, scope, language and time, never the chunk text. Queries by document, chunk, source and time range. A failed audit write is retried and then parked in an outbox, so it is not lost (see [docs/audit.md](docs/audit.md))
+- PII and secret scanning before dedup and embedding: a built in detector for cards (Luhn), API keys, emails, phone numbers, Aadhaar (Verhoeff), PAN, SSN and IBAN, a policy per type (Flag, Mask or Block), masking before the chunk is fingerprinted, and an interface for Presidio or Azure AI Language (see [docs/pii.md](docs/pii.md))
+- erasure by document, by source, by text, by chunk and by finding, which removes the vectors, the chunks and every fingerprint, and leaves a receipt that has counts and no content (see [docs/erasure.md](docs/erasure.md))
 - a writer for any Microsoft.Extensions.VectorData collection, with batching, retries and the scoped delete that revisions use
 - the interfaces for the rest
 
@@ -96,6 +99,30 @@ services.AddRechunk(o => o.Language.AutoDetect = true);   // or the built in det
 
 Text in scripts without spaces is cut into characters for SimHash and MinHash, so a one character edit in a Chinese, Japanese or Thai paragraph is still a near duplicate. Details, options and limits are in [docs/languages.md](docs/languages.md).
 
+## Audit, PII and erasure
+
+The audit log is on by default and holds no chunk text. PII scanning is off until you turn it on:
+
+```csharp
+services.AddRechunk(o =>
+{
+    o.Pii.Enabled = true;
+    o.Pii.Set(PiiType.ApiKey, PiiPolicy.Block);   // never stored or embedded
+    o.Pii.Set(PiiType.Email, PiiPolicy.Mask);     // [EMAIL] goes into the dedup and the embedding
+});                                               // every other type is flagged
+
+await tracker.ReviseAsync(doc, "tenant-1", chunks, embedder, sink, holder: id, source: "wiki");
+
+// what happened to a document, and what a source contributed this month
+var events = audit.QueryAsync(new AuditQuery(Document: doc));
+var month = audit.QueryAsync(new AuditQuery(From: start, To: end) { Source = "wiki" });
+
+// right to erasure: everything that came from a source, with a receipt
+var result = await tracker.EraseAsync(new EraseRequest("tenant-1", null, "wiki", "ticket 4711", "support"), sink);
+```
+
+A PII finding is stored as a type and a span, never the value. Masking happens before the fingerprints are made, so two chunks that differ only in an email address become one. The built in detector is a set of rules with checksums and context words, and it will miss things, so use it as one layer. Details and limits are in [docs/audit.md](docs/audit.md), [docs/pii.md](docs/pii.md) and [docs/erasure.md](docs/erasure.md).
+
 ## Synthetic measurement
 
 This is made up text, not real documents, so read it as a check that the stages do what they should and not as a result you can expect on your data. The corpus is 4000 chunks of 60 to 150 pseudo words, plus 1500 planted variants (5500 chunks in all), 300 of each kind: the same text with extra whitespace, one word changed, about 2 percent of the words changed, about 5 percent changed, and a changed number or an added "not". A planted variant should be merged when its exact Jaccard to the original is at least 0.85 and the guard does not apply, which is 900 of them. Fixed seed, so the numbers repeat.
@@ -123,8 +150,6 @@ To repeat it: `dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- 
 ## Planned features
 
 - tuning the thresholds on a public document set
-- a persistent audit log (revisions write audit events already, but the only log is the in memory one)
-- deletion by source (right to erasure by source, today a document has to be named)
 - MMR style diversity when retrieving
 - a benchmark on a public document set, embedding calls saved against answer quality
 - Microsoft.Extensions.AI and Semantic Kernel integration

@@ -21,6 +21,12 @@ public sealed class RechunkOptions
     /// <summary>Settings for revision tracking and deletes.</summary>
     public RevisionOptions Revisions { get; } = new();
 
+    /// <summary>Scanning for personal data and secrets before dedup and embedding.</summary>
+    public PiiOptions Pii { get; } = new();
+
+    /// <summary>Retries and the outbox for audit writes.</summary>
+    public AuditOptions Audit { get; } = new();
+
     public DuplicatePolicy OnDuplicate { get; set; } = DuplicatePolicy.Alias;
 
     public RevisionPolicy OnRevision { get; set; } = RevisionPolicy.ReEmbedChanged;
@@ -55,6 +61,8 @@ public sealed class RechunkOptions
 
         Language.Validate();
         Revisions.Validate();
+        Pii.Validate();
+        Audit.Validate();
 
         if (Store.LeaseDuration <= TimeSpan.Zero)
         {

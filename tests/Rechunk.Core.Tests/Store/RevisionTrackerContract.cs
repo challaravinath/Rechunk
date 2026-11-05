@@ -31,6 +31,14 @@ public sealed class HookedRevisionStore(IRevisionStore inner) : IRevisionStore
 
     public ValueTask<IReadOnlyList<ChunkRef>> ListRefsAsync(string scope, CancellationToken ct = default) =>
         inner.ListRefsAsync(scope, ct);
+
+    public ValueTask<IReadOnlyList<DocumentRef>> ListDocumentsAsync(
+        string scope, string? source, string? afterDocument, int take, CancellationToken ct = default) =>
+        inner.ListDocumentsAsync(scope, source, afterDocument, take, ct);
+
+    public ValueTask<IReadOnlyList<DocumentRef>> ListDocumentsUsingAsync(
+        string scope, IReadOnlyCollection<ChunkId> chunks, string? afterDocument, int take, CancellationToken ct = default) =>
+        inner.ListDocumentsUsingAsync(scope, chunks, afterDocument, take, ct);
 }
 
 /// <summary>The three stores a worker uses. Two workers in one test share the same data.</summary>
@@ -40,7 +48,7 @@ public sealed record WorkerStores(IFingerprintStore Fingerprints, IRevisionStore
 /// The revision tracker end to end, on every backend. The tests use real stores and a sink that really deletes, and look
 /// at what is left in the sink, the stores and the embedder afterwards.
 /// </summary>
-public abstract class RevisionTrackerContract : IDisposable
+public abstract partial class RevisionTrackerContract : IDisposable
 {
     protected const string Scope = "tenant-a";
     protected readonly ManualTimeProvider Clock = new();
@@ -89,6 +97,7 @@ public abstract class RevisionTrackerContract : IDisposable
 
     private Worker NewWorker(WorkerStores stores, RechunkOptions options)
     {
+        var piiOptions = options.Pii;
         var pipeline = RechunkPipeline.CreateBuilder()
             .Configure(o =>
             {
@@ -101,6 +110,14 @@ public abstract class RevisionTrackerContract : IDisposable
                 o.Revisions.ConflictDelay = options.Revisions.ConflictDelay;
                 o.Revisions.MaxConflictRetries = options.Revisions.MaxConflictRetries;
                 o.Revisions.RetireLease = options.Revisions.RetireLease;
+                o.Pii.Enabled = piiOptions.Enabled;
+                o.Pii.DefaultPolicy = piiOptions.DefaultPolicy;
+                o.Pii.Detector = piiOptions.Detector;
+                o.Pii.MinConfidence = piiOptions.MinConfidence;
+                foreach (var (type, policy) in piiOptions.Policies)
+                {
+                    o.Pii.Set(type, policy);
+                }
             })
             .UseFingerprintStore(stores.Fingerprints)
             .Build();
@@ -761,7 +778,7 @@ public abstract class RevisionTrackerContract : IDisposable
         var w = NewWorker();
 
         await Assert.ThrowsAsync<ArgumentException>(async () =>
-            await w.Tracker.EraseAsync(new EraseRequest(Scope, null, "wiki", "user asked", "support"), new RecordingSink()));
+            await w.Tracker.EraseAsync(new EraseRequest(Scope, null, null, "user asked", "support"), new RecordingSink()));
     }
 
     [SkippableFact]

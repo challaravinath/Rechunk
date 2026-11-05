@@ -83,4 +83,21 @@ public class BackedFingerprintStore : IFingerprintStore
 
         return removed;
     }
+
+    public async ValueTask<int> ForgetExactAsync(
+        string scope, ChunkId owner, IReadOnlyList<ReadOnlyMemory<byte>> exactHashes, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        ArgumentNullException.ThrowIfNull(exactHashes);
+        var removed = 0;
+        foreach (var hash in exactHashes)
+        {
+            if (await _backend.RemoveOwnedAsync(scope, hash, owner, ct).ConfigureAwait(false))
+            {
+                removed++;
+            }
+        }
+
+        return removed;
+    }
 }

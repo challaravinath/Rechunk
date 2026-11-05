@@ -42,20 +42,30 @@ public static class ServiceCollectionExtensions
                 store);
         });
         services.TryAddSingleton<IRevisionStore, InMemoryRevisionStore>();
+        services.TryAddSingleton<IAuditLog>(sp => new InMemoryAuditLog(sp.GetRequiredService<RechunkOptions>().Audit.InMemoryLimit));
+        services.TryAddSingleton<IAuditOutbox, InMemoryAuditOutbox>();
+        services.TryAddSingleton(sp => new AuditWriter(
+            sp.GetRequiredService<IAuditLog>(),
+            sp.GetRequiredService<IAuditOutbox>(),
+            sp.GetRequiredService<RechunkOptions>().Audit,
+            sp.GetService<ILogger<AuditWriter>>() ?? NullLogger<AuditWriter>.Instance,
+            sp.GetService<TimeProvider>()));
         services.TryAddSingleton(sp => new RevisionTracker(
             sp.GetRequiredService<RechunkPipeline>(),
             sp.GetRequiredService<IRevisionStore>(),
             sp.GetRequiredService<IDeadLetterStore>(),
-            sp.GetService<IAuditLog>(),
+            sp.GetRequiredService<IAuditLog>(),
             sp.GetService<ILogger<RevisionTracker>>() ?? NullLogger<RevisionTracker>.Instance,
-            sp.GetService<TimeProvider>()));
+            sp.GetService<TimeProvider>(),
+            sp.GetRequiredService<AuditWriter>()));
         services.TryAddSingleton(sp => new ChunkIngestor(
             sp.GetRequiredService<RechunkPipeline>(),
             sp.GetRequiredService<IChunkEmbedder>(),
             sp.GetRequiredService<IVectorSink>(),
             sp.GetRequiredService<IDeadLetterStore>(),
             sp.GetService<ILogger<ChunkIngestor>>() ?? NullLogger<ChunkIngestor>.Instance,
-            sp.GetService<TimeProvider>()));
+            sp.GetService<TimeProvider>(),
+            sp.GetRequiredService<AuditWriter>()));
 
         return new RechunkBuilder(services);
     }

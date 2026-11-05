@@ -90,7 +90,8 @@ public sealed class InMemoryRevisionStore : IRevisionStore
 
             var revision = currentRevision + 1;
             _docs[(request.Scope, request.Document.Value)] = new DocumentManifest(
-                request.Scope, request.Document, revision, request.Entries.ToList(), request.At);
+                request.Scope, request.Document, revision, request.Entries.ToList(), request.At,
+                request.Source ?? current?.Source);
 
             return ValueTask.FromResult(new CommitRevisionResult(
                 CommitRevisionStatus.Committed, revision, orphaned, Array.Empty<ChunkId>()));
@@ -187,6 +188,46 @@ public sealed class InMemoryRevisionStore : IRevisionStore
                 .Where(p => p.Key.Scope == scope)
                 .OrderBy(p => p.Key.Chunk, StringComparer.Ordinal)
                 .Select(p => new ChunkRef(new ChunkId(p.Key.Chunk), p.Value.Count, p.Value.State))
+                .ToList();
+            return ValueTask.FromResult(found);
+        }
+    }
+
+    public ValueTask<IReadOnlyList<DocumentRef>> ListDocumentsAsync(
+        string scope, string? source, string? afterDocument, int take, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        ct.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            IReadOnlyList<DocumentRef> found = _docs
+                .Where(p => p.Key.Scope == scope
+                    && (source is null || p.Value.Source == source)
+                    && (afterDocument is null || string.CompareOrdinal(p.Key.Document, afterDocument) > 0))
+                .OrderBy(p => p.Key.Document, StringComparer.Ordinal)
+                .Take(take)
+                .Select(p => new DocumentRef(p.Value.Document, p.Value.Revision, p.Value.Source))
+                .ToList();
+            return ValueTask.FromResult(found);
+        }
+    }
+
+    public ValueTask<IReadOnlyList<DocumentRef>> ListDocumentsUsingAsync(
+        string scope, IReadOnlyCollection<ChunkId> chunks, string? afterDocument, int take, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        ArgumentNullException.ThrowIfNull(chunks);
+        ct.ThrowIfCancellationRequested();
+        var wanted = chunks.Select(c => c.Value).ToHashSet(StringComparer.Ordinal);
+        lock (_gate)
+        {
+            IReadOnlyList<DocumentRef> found = _docs
+                .Where(p => p.Key.Scope == scope
+                    && (afterDocument is null || string.CompareOrdinal(p.Key.Document, afterDocument) > 0)
+                    && p.Value.Entries.Any(e => wanted.Contains(e.Id.Value) || wanted.Contains(e.Target.Value)))
+                .OrderBy(p => p.Key.Document, StringComparer.Ordinal)
+                .Take(take)
+                .Select(p => new DocumentRef(p.Value.Document, p.Value.Revision, p.Value.Source))
                 .ToList();
             return ValueTask.FromResult(found);
         }

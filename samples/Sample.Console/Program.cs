@@ -65,3 +65,4 @@ foreach (var stage in new[] { MatchStage.Exact, MatchStage.SimHash, MatchStage.M
 }
 
 await RevisionDemo.RunAsync();
+await RevisionDemo.RunAuditAndErasureAsync();

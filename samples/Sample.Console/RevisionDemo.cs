@@ -43,6 +43,61 @@ internal static class RevisionDemo
         Console.WriteLine($"Vectors left in the store: {sink.Count}. Orphans: {report.OrphanVectors.Count}, missing: {report.MissingVectors.Count}.");
     }
 
+    /// <summary>
+    /// The audit trail, PII scanning and erasure. An email address is masked, a document with an access key is kept out,
+    /// every step is audited without text, and at the end everything that came from one source is erased.
+    /// </summary>
+    public static async Task RunAuditAndErasureAsync()
+    {
+        var pipeline = RechunkPipeline.CreateBuilder()
+            .Configure(o =>
+            {
+                o.Pii.Enabled = true;
+                o.Pii.Set(PiiType.Email, PiiPolicy.Mask);
+                o.Pii.Set(PiiType.ApiKey, PiiPolicy.Block);
+            })
+            .UseFingerprintStore(new InMemoryFingerprintStore(new RechunkOptions()))
+            .Build();
+        var audit = new InMemoryAuditLog();
+        var tracker = new RevisionTracker(pipeline, new InMemoryRevisionStore(), new InMemoryDeadLetterStore(), audit);
+        var embedder = new DemoEmbedder();
+        var sink = new DemoSink();
+
+        // Built from pieces so this file does not hold something that looks like a real key.
+        var key = "AKIA" + "Q3XJ7RM2WKD5" + "TZ4B";
+
+        Console.WriteLine();
+        Console.WriteLine("Audit, PII and erasure");
+
+        var contact = new DocumentId("contacts");
+        var runbook = new DocumentId("runbook");
+        var policy = new DocumentId("policy");
+
+        var first = await tracker.ReviseAsync(contact, "demo", Chunks("To reach the payroll team write to anita.rao@example.com during office hours."), embedder, sink, source: "wiki");
+        Console.WriteLine($"  contacts (wiki): {first.Embedded} embedded, the email address is masked before it is embedded");
+
+        var second = await tracker.ReviseAsync(runbook, "demo", Chunks("Deploy with the access key " + key + " that is stored in the build settings."), embedder, sink, source: "wiki");
+        Console.WriteLine($"  runbook (wiki): {second.Embedded} embedded, {second.PiiBlocked} kept out because of the access key");
+
+        await tracker.ReviseAsync(policy, "demo", Chunks("Expenses must be filed within two weeks of the purchase date, with the receipt attached."), embedder, sink, source: "drive");
+
+        Console.WriteLine("  What the audit log has for the wiki (no chunk text, only ids, kinds and spans):");
+        await foreach (var e in audit.QueryAsync(new AuditQuery { Source = "wiki" }))
+        {
+            var spans = e.Findings.Count == 0 ? string.Empty : "  " + string.Join(", ", e.Findings.Select(f => $"{f.Type} at {f.Start} length {f.Length} ({f.Applied})"));
+            Console.WriteLine($"    {e.Kind,-8} {e.Document.Value,-9} {e.Stage}{spans}");
+        }
+
+        var erased = await tracker.EraseAsync(new EraseRequest("demo", null, "wiki", "demo request", "demo"), sink);
+        Console.WriteLine($"  Erased everything from the wiki: {erased.Documents} documents, {erased.VectorsDeleted} vectors, {erased.StateRowsDeleted} fingerprint rows.");
+        Console.WriteLine($"  Vectors left in the store: {sink.Count} (the policy document from the drive).");
+
+        await foreach (var receipt in audit.QueryAsync(new AuditQuery { Kind = AuditKind.ErasureReceipt }))
+        {
+            Console.WriteLine($"  Receipt: {string.Join(", ", receipt.Counts.Select(c => $"{c.Key} {c.Value}"))}, asked by {receipt.Actor}.");
+        }
+    }
+
     private static List<ChunkInput> Chunks(params string[] texts) =>
         texts.Select((t, i) => new ChunkInput(i, t)).ToList();
 

@@ -5,7 +5,14 @@ namespace Rechunk;
 /// Chunks of different languages are never treated as duplicates of each other. Leave it null to let the detector set in
 /// the options decide, or to keep the chunk untagged.
 /// </summary>
-public sealed record ChunkInput(int Ordinal, string Text, string? Language = null);
+public sealed record ChunkInput(int Ordinal, string Text, string? Language = null)
+{
+    // set by the PII scanner, so a chunk is scanned once and its text is already masked when it has this
+    internal PiiScan? Scan { get; init; }
+
+    /// <summary>What the PII scan found in this chunk, or null when no scan ran. Types and spans only.</summary>
+    public IReadOnlyList<PiiHit>? PiiFindings => Scan?.Hits;
+}
 
 /// <summary>
 /// What we remember about the text of one chunk.
@@ -138,7 +145,9 @@ public sealed record RevisionResult(
     int Embedded = 0,
     int Moved = 0,
     int InFlight = 0,
-    int DeadLettered = 0);
+    int DeadLettered = 0,
+    int PiiBlocked = 0,
+    int AuditPending = 0);
 
 public sealed record EraseRequest(
     string Scope,
@@ -149,9 +158,16 @@ public sealed record EraseRequest(
 
 /// <summary>
 /// VectorsDeleted counts vectors that were removed. A chunk that another document still uses stays, so it is not
-/// counted. StateRowsDeleted counts fingerprint rows and dead letters that were removed.
+/// counted. StateRowsDeleted counts fingerprint rows and dead letters that were removed. Documents is how many documents
+/// were deleted, Chunks how many chunks lost their last use, and ReceiptId is the id of the audit event that records the
+/// erasure, which holds counts and no content.
 /// </summary>
-public sealed record EraseResult(int VectorsDeleted, int StateRowsDeleted);
+public sealed record EraseResult(
+    int VectorsDeleted,
+    int StateRowsDeleted,
+    int Documents = 0,
+    int Chunks = 0,
+    string? ReceiptId = null);
 
 public sealed record VerifyReport(
     IReadOnlyList<ChunkId> OrphanVectors,
@@ -159,19 +175,3 @@ public sealed record VerifyReport(
 {
     public bool IsClean => OrphanVectors.Count == 0 && MissingVectors.Count == 0;
 }
-
-public sealed record AuditEvent(
-    ChunkId Chunk,
-    DocumentId Document,
-    int Revision,
-    string Source,
-    DateTimeOffset At,
-    string EmbeddingModel,
-    ChunkAction Action,
-    string Reason);
-
-public sealed record AuditQuery(
-    DocumentId? Document = null,
-    ChunkId? Chunk = null,
-    DateTimeOffset? From = null,
-    DateTimeOffset? To = null);

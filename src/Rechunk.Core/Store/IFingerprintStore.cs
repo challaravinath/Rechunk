@@ -52,6 +52,31 @@ public interface IFingerprintStore
     /// </summary>
     ValueTask<int> ForgetAsync(
         string scope, ChunkId owner, IReadOnlyList<ReadOnlyMemory<byte>> exactHashes, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes only the exact hash rows, and only the ones that are committed and belong to the owner. The owner's entries
+    /// in the SimHash and MinHash indexes stay, so this is the way to forget the text of a duplicate that was stored as
+    /// an alias while the chunk it points at stays. Returns how many rows went. The default does a find and a remove,
+    /// which is not atomic: the built in stores override it with an atomic one.
+    /// </summary>
+    async ValueTask<int> ForgetExactAsync(
+        string scope, ChunkId owner, IReadOnlyList<ReadOnlyMemory<byte>> exactHashes, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        ArgumentNullException.ThrowIfNull(exactHashes);
+        var removed = 0;
+        foreach (var hash in exactHashes)
+        {
+            if (await Exact.FindAsync(scope, hash, ct).ConfigureAwait(false) is { } found
+                && found == owner
+                && await Exact.RemoveAsync(scope, hash, ct).ConfigureAwait(false))
+            {
+                removed++;
+            }
+        }
+
+        return removed;
+    }
 }
 
 /// <summary>Ask for a hash. Holder is whatever names one piece of work, for example the queue message id.</summary>
