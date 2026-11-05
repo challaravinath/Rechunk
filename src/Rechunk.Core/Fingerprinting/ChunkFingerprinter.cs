@@ -3,7 +3,7 @@ namespace Rechunk;
 /// <summary>
 /// Default fingerprinter. The exact hash is always made. SimHash and MinHash are made when they are
 /// switched on in the options, and only for chunks with enough words. The text is normalized and split
-/// into words once and shared by all of them.
+/// into tokens once and shared by all of them.
 /// </summary>
 public sealed class ChunkFingerprinter : IChunkFingerprinter
 {
@@ -14,8 +14,8 @@ public sealed class ChunkFingerprinter : IChunkFingerprinter
     public ChunkFingerprinter(RechunkOptions options)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
-        _simHasher = new SimHasher(options.SimHash.ShingleSize);
-        _minHasher = new MinHasher(options.MinHash);
+        _simHasher = new SimHasher(options.SimHash.ShingleSize, SimHasher.DefaultSeed, options.Language.CharShingleSize);
+        _minHasher = new MinHasher(options.MinHash, options.Language.CharShingleSize);
     }
 
     /// <summary>
@@ -39,6 +39,12 @@ public sealed class ChunkFingerprinter : IChunkFingerprinter
                 version += $"+{MinHasher.Version}-s{m.ShingleSize}-p{m.Permutations}-m{m.MinWords}";
             }
 
+            if (_options.SimHash.Enabled || _options.MinHash.Enabled)
+            {
+                var language = _options.Language;
+                version += language.CharacterShingles ? $"+tok-v2-c{language.CharShingleSize}-w{language.CharsPerWord}" : "+tok-v2-nochars";
+            }
+
             if ((_options.SimHash.Enabled || _options.MinHash.Enabled) && _options.GuardNumbersAndNegations)
             {
                 version += $"+{FalseMergeGuard.Version}";
@@ -59,9 +65,10 @@ public sealed class ChunkFingerprinter : IChunkFingerprinter
 
         if (_options.SimHash.Enabled || _options.MinHash.Enabled)
         {
-            var tokens = WordTokenizer.Tokenize(normalized);
-            var simHashOn = _options.SimHash.Enabled && tokens.Count >= _options.SimHash.MinWords;
-            var minHashOn = _options.MinHash.Enabled && tokens.Count >= _options.MinHash.MinWords;
+            var tokens = WordTokenizer.Tokenize(normalized, _options.Language.CharacterShingles);
+            var units = Shingler.Units(tokens, _options.Language.CharsPerWord);
+            var simHashOn = _options.SimHash.Enabled && units >= _options.SimHash.MinWords;
+            var minHashOn = _options.MinHash.Enabled && units >= _options.MinHash.MinWords;
 
             if (simHashOn)
             {

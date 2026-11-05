@@ -41,6 +41,14 @@ public static class ServiceCollectionExtensions
                 store?.MinHash ?? sp.GetRequiredService<MinHashLshIndex>(),
                 store);
         });
+        services.TryAddSingleton<IRevisionStore, InMemoryRevisionStore>();
+        services.TryAddSingleton(sp => new RevisionTracker(
+            sp.GetRequiredService<RechunkPipeline>(),
+            sp.GetRequiredService<IRevisionStore>(),
+            sp.GetRequiredService<IDeadLetterStore>(),
+            sp.GetService<IAuditLog>(),
+            sp.GetService<ILogger<RevisionTracker>>() ?? NullLogger<RevisionTracker>.Instance,
+            sp.GetService<TimeProvider>()));
         services.TryAddSingleton(sp => new ChunkIngestor(
             sp.GetRequiredService<RechunkPipeline>(),
             sp.GetRequiredService<IChunkEmbedder>(),

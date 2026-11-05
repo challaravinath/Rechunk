@@ -9,7 +9,26 @@ public sealed record IngestRequest(
     DocumentId Document,
     IReadOnlyList<ChunkInput> Chunks,
     string? Holder = null,
-    int Revision = 1);
+    int Revision = 1,
+    IReadOnlySet<ChunkId>? NearExclude = null);
+
+public enum ChunkStatus
+{
+    /// <summary>The chunk was embedded, written and committed under its own id.</summary>
+    Stored,
+
+    /// <summary>A copy of a chunk that is stored. Target says which one.</summary>
+    Duplicate,
+
+    /// <summary>Another worker holds the same text right now. Try again later.</summary>
+    InFlight,
+
+    /// <summary>The chunk went to the dead letter store, or it waited for a chunk that did.</summary>
+    Failed,
+}
+
+/// <summary>What became of one chunk of a request. Target is the id the chunk is stored under, which is the chunk's own id unless it is a duplicate.</summary>
+public sealed record ChunkOutcome(int Ordinal, ChunkId Id, ChunkId Target, string? Language, ChunkStatus Status);
 
 public sealed record IngestResult(
     string Scope,
@@ -18,8 +37,12 @@ public sealed record IngestResult(
     int Duplicates,
     int InFlight,
     IReadOnlyList<DeadLetter> DeadLetters,
-    int LostClaims = 0)
+    int LostClaims = 0,
+    IReadOnlyList<ChunkOutcome>? Chunks = null)
 {
+    /// <summary>One entry per chunk of the request, in the same order.</summary>
+    public IReadOnlyList<ChunkOutcome> Outcomes => Chunks ?? Array.Empty<ChunkOutcome>();
+
     public int DeadLetterCount => DeadLetters.Count;
 
     /// <summary>True when every chunk is either stored or a duplicate of one that is.</summary>
@@ -107,7 +130,7 @@ public sealed class ChunkIngestor
             var request = new IngestRequest(
                 item.Scope,
                 item.Document ?? default,
-                new[] { new ChunkInput(item.Ordinal, text) },
+                new[] { new ChunkInput(item.Ordinal, text, item.Language) },
                 "replay-" + item.Id);
             var result = await RunAsync(request, ct).ConfigureAwait(false);
 
@@ -157,7 +180,7 @@ public sealed class ChunkIngestor
             try
             {
                 await Pause(attempt, ct).ConfigureAwait(false);
-                report = await _pipeline.DeduplicateAsync(scope, request.Chunks, new DedupClaimOptions(holder), ct).ConfigureAwait(false);
+                report = await _pipeline.DeduplicateAsync(scope, request.Chunks, new DedupClaimOptions(holder, null, request.NearExclude), ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (!IsCancelled(ex, ct))
             {
@@ -169,13 +192,18 @@ public sealed class ChunkIngestor
 
         if (report is null)
         {
+            var failed = new List<ChunkOutcome>(request.Chunks.Count);
             foreach (var chunk in request.Chunks)
             {
+                var language = SafeLanguage(chunk);
+                var plain = _pipeline.IdFor(chunk.Text);
+                var id = language is null ? plain : new ChunkId(plain.Value + LanguageTags.IdSeparator + language);
                 deadLetters.Add(MakeDeadLetter(
-                    scope, _pipeline.IdFor(chunk.Text), request.Document, chunk, DeadLetterStage.Dedup, failure!, max));
+                    scope, id, request.Document, chunk, language, DeadLetterStage.Dedup, failure!, max));
+                failed.Add(new ChunkOutcome(chunk.Ordinal, id, id, language, ChunkStatus.Failed));
             }
 
-            return new IngestResult(scope, holder, 0, 0, 0, deadLetters);
+            return new IngestResult(scope, holder, 0, 0, 0, deadLetters, 0, failed);
         }
 
         var todo = report.Decisions
@@ -211,19 +239,23 @@ public sealed class ChunkIngestor
             throw;
         }
 
-        await SettleAliasesAsync(report, committedIds).ConfigureAwait(false);
+        var settled = await SettleAliasesAsync(report, committedIds).ConfigureAwait(false);
 
-        return new IngestResult(scope, holder, done, report.DuplicateCount, report.InFlightCount, deadLetters, lost);
+        return new IngestResult(
+            scope, holder, done, report.DuplicateCount, report.InFlightCount, deadLetters, lost,
+            Outcomes(report, committedIds, settled));
     }
 
     // A chunk that is close to another chunk of the same batch waits for it: it is committed when that chunk is,
     // and given back when that chunk failed, so it is never left pointing at nothing.
-    private async ValueTask SettleAliasesAsync(DedupReport report, HashSet<string> committedIds)
+    // Returns the ids of the waiting chunks that ended up committed.
+    private async ValueTask<HashSet<string>> SettleAliasesAsync(DedupReport report, HashSet<string> committedIds)
     {
+        var settled = new HashSet<string>(StringComparer.Ordinal);
         var store = _pipeline.Store;
         if (store is null)
         {
-            return;
+            return settled;
         }
 
         foreach (var claim in report.Claims.Where(c => c.AliasOf is not null))
@@ -233,6 +265,7 @@ public sealed class ChunkIngestor
                 try
                 {
                     await store.CommitAsync(claim.ToCommit(), CancellationToken.None).ConfigureAwait(false);
+                    settled.Add(claim.Id.Value);
                     continue;
                 }
                 catch (Exception ex)
@@ -243,6 +276,66 @@ public sealed class ChunkIngestor
             }
 
             await ReleaseAllAsync(new[] { claim }).ConfigureAwait(false);
+        }
+
+        return settled;
+    }
+
+    private static List<ChunkOutcome> Outcomes(DedupReport report, HashSet<string> committedIds, HashSet<string> settled)
+    {
+        var embeddedInBatch = report.Decisions
+            .Where(d => d.Outcome is DedupOutcome.Unique or DedupOutcome.Flagged)
+            .Select(d => d.Id.Value)
+            .ToHashSet(StringComparer.Ordinal);
+        var list = new List<ChunkOutcome>(report.Decisions.Count);
+
+        foreach (var d in report.Decisions)
+        {
+            ChunkOutcome outcome;
+            switch (d.Outcome)
+            {
+                case DedupOutcome.InFlight:
+                    outcome = new ChunkOutcome(d.Input.Ordinal, d.Id, d.Id, d.Language, ChunkStatus.InFlight);
+                    break;
+                case DedupOutcome.Unique or DedupOutcome.Flagged:
+                    outcome = new ChunkOutcome(
+                        d.Input.Ordinal, d.Id, d.Id, d.Language,
+                        committedIds.Contains(d.Id.Value) ? ChunkStatus.Stored : ChunkStatus.Failed);
+                    break;
+                default:
+                    var target = d.DuplicateOf ?? d.Id;
+                    var ok = true;
+                    if (d.Claim?.AliasOf is not null)
+                    {
+                        ok = settled.Contains(d.Id.Value);
+                    }
+                    else if (embeddedInBatch.Contains(target.Value))
+                    {
+                        // a copy of a chunk of this same request, so it only counts when that chunk was written
+                        ok = committedIds.Contains(target.Value);
+                    }
+
+                    outcome = new ChunkOutcome(
+                        d.Input.Ordinal, d.Id, target, d.Language, ok ? ChunkStatus.Duplicate : ChunkStatus.Failed);
+                    break;
+            }
+
+            list.Add(outcome);
+        }
+
+        return list;
+    }
+
+    private string? SafeLanguage(ChunkInput chunk)
+    {
+        try
+        {
+            return _pipeline.LanguageFor(chunk);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // a detector that throws is probably why the dedup failed too, so fall back to the tag the caller gave
+            return LanguageTags.Normalize(chunk.Language, _options.Language.PrimarySubtagOnly);
         }
     }
 
@@ -362,7 +455,7 @@ public sealed class ChunkIngestor
         _logger.LogError("Chunk {Chunk} in {Scope} is going to the dead letter store after {Attempts} attempts at {Stage}: {Error}",
             Short(decision.Id.Value), scope, attempts, stage, error.GetType().Name);
 
-        deadLetters.Add(MakeDeadLetter(scope, decision.Id, request.Document, decision.Input, stage, error, attempts));
+        deadLetters.Add(MakeDeadLetter(scope, decision.Id, request.Document, decision.Input, decision.Language, stage, error, attempts));
         await ReleaseAllAsync(decision.Claim is null ? Array.Empty<ChunkClaim>() : new[] { decision.Claim }).ConfigureAwait(false);
     }
 
@@ -390,7 +483,7 @@ public sealed class ChunkIngestor
     }
 
     private DeadLetter MakeDeadLetter(
-        string scope, ChunkId id, DocumentId document, ChunkInput chunk, DeadLetterStage stage, Exception error, int attempts) =>
+        string scope, ChunkId id, DocumentId document, ChunkInput chunk, string? language, DeadLetterStage stage, Exception error, int attempts) =>
         new(
             DeadLetterId(scope, id),
             scope,
@@ -401,7 +494,8 @@ public sealed class ChunkIngestor
             Describe(error, chunk.Text),
             attempts,
             _time.GetUtcNow(),
-            _options.Failures.StoreTextInDeadLetters ? chunk.Text : null);
+            _options.Failures.StoreTextInDeadLetters ? chunk.Text : null,
+            language);
 
     // The same chunk in the same scope always gets the same id, so a queue message that is delivered again and fails
     // again updates its record and does not add a second one.
@@ -427,7 +521,9 @@ public sealed class ChunkIngestor
     }
 
     private EmbeddedChunk ToEmbedded(IngestRequest request, DedupDecision decision, ReadOnlyMemory<float> vector) =>
-        new(decision.Id, request.Document, request.Revision, decision.Input.Text, vector, _embedder.ModelId);
+        new(
+            decision.Id, request.Document, request.Revision, decision.Input.Text, vector, _embedder.ModelId,
+            request.Scope ?? _options.DefaultScope, decision.Language);
 
     private async ValueTask Pause(int attempt, CancellationToken ct)
     {

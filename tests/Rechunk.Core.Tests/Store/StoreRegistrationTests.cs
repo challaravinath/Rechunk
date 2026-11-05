@@ -51,6 +51,54 @@ public class StoreRegistrationTests
         Assert.Equal(0, again.Embedded);
     }
 
+    private static List<ChunkInput> Doc(params int[] seeds) =>
+        seeds.Select((seed, i) => new ChunkInput(i, string.Join(' ', TestText.Words(seed, 150)))).ToList();
+
+    [Fact]
+    public async Task The_revision_tracker_comes_from_the_container_with_the_in_memory_revision_store_by_default()
+    {
+        await using var provider = Services(b => b.UseInMemoryFingerprintStore()).BuildServiceProvider();
+        var tracker = provider.GetRequiredService<RevisionTracker>();
+        var sink = provider.GetRequiredService<IVectorSink>();
+        var embedder = provider.GetRequiredService<IChunkEmbedder>();
+
+        Assert.IsType<InMemoryRevisionStore>(provider.GetRequiredService<IRevisionStore>());
+
+        var first = await tracker.ReviseAsync(new DocumentId("d"), "t", Doc(1, 2), embedder, sink);
+        var second = await tracker.ReviseAsync(new DocumentId("d"), "t", Doc(1, 3), embedder, sink);
+
+        Assert.Equal(2, first.Embedded);
+        Assert.Equal(1, second.Embedded);
+        Assert.Equal(1, second.Kept);
+        Assert.Equal(1, second.Deleted);
+    }
+
+    [Fact]
+    public async Task Sqlite_storage_carries_the_manifest_between_containers()
+    {
+        using var file = new TempSqlite();
+        var sink = new RecordingSink();
+
+        await using (var first = Services(b => b.AddSqliteStorage(file.ConnectionString)).BuildServiceProvider())
+        {
+            Assert.IsType<SqliteRevisionStore>(first.GetRequiredService<IRevisionStore>());
+            var result = await first.GetRequiredService<RevisionTracker>()
+                .ReviseAsync(new DocumentId("d"), "t", Doc(1, 2), first.GetRequiredService<IChunkEmbedder>(), sink);
+            Assert.Equal(RevisionStatus.Applied, result.Status);
+        }
+
+        // a second container stands in for another stateless worker
+        await using var second = Services(b => b.AddSqliteStorage(file.ConnectionString)).BuildServiceProvider();
+        var tracker = second.GetRequiredService<RevisionTracker>();
+        var manifest = await tracker.GetManifestAsync("t", new DocumentId("d"));
+        Assert.Equal(1, manifest!.Revision);
+
+        var again = await tracker.ReviseAsync(new DocumentId("d"), "t", Doc(1), second.GetRequiredService<IChunkEmbedder>(), sink);
+        Assert.Equal(0, again.Embedded);
+        Assert.Equal(1, again.Deleted);
+        Assert.Single(sink.StoredIds);
+    }
+
     [Fact]
     public void Redis_storage_registers_the_stores_without_connecting_until_they_are_used()
     {

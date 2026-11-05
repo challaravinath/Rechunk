@@ -138,6 +138,33 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
         return ValueTask.FromResult(false);
     }
 
+    public async ValueTask<int> ForgetAsync(
+        string scope, ChunkId owner, IReadOnlyList<ReadOnlyMemory<byte>> exactHashes, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        ArgumentNullException.ThrowIfNull(exactHashes);
+        ct.ThrowIfCancellationRequested();
+
+        await SimHashIndex.RemoveAsync(owner, scope, ct).ConfigureAwait(false);
+        await MinHashIndex.RemoveAsync(owner, scope, ct).ConfigureAwait(false);
+
+        var removed = 0;
+        lock (_gate)
+        {
+            foreach (var hash in exactHashes)
+            {
+                var key = Key(scope, hash);
+                if (_rows.TryGetValue(key, out var row) && row.Committed && row.Chunk == owner)
+                {
+                    _rows.Remove(key);
+                    removed++;
+                }
+            }
+        }
+
+        return removed;
+    }
+
     private ValueTask<ChunkId?> FindCommitted(string scope, ReadOnlyMemory<byte> hash, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();

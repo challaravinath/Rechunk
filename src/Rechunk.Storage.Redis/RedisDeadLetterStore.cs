@@ -78,6 +78,12 @@ public sealed class RedisDeadLetterStore : IDeadLetterStore
             args.Add(deadLetter.Text);
         }
 
+        if (deadLetter.Language is not null)
+        {
+            args.Add("language");
+            args.Add(deadLetter.Language);
+        }
+
         await db.ScriptEvaluateAsync(
             AddScript,
             [record, _keys.DeadLetterAll, _keys.DeadLetterScope(deadLetter.Scope), oldScopeKey],
@@ -208,6 +214,7 @@ public sealed class RedisDeadLetterStore : IDeadLetterStore
             Field("reason")!,
             Int("attempts"),
             new DateTimeOffset(long.Parse(Field("failed")!, CultureInfo.InvariantCulture), TimeSpan.Zero),
-            Field("body"));
+            Field("body"),
+            Field("language"));
     }
 }

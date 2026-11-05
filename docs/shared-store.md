@@ -124,11 +124,11 @@ A queue has its own idea of a failed message: after a number of deliveries it mo
 | Survives a restart | no | yes | depends on how Redis persists |
 | Good for | tests, one process | one machine, local development | several instances |
 
-All three get the same test suite (`FingerprintStoreContract` and `DeadLetterStoreContract` in the test project). The near duplicate logic is written once in the core library. A backend only stores the exact hash rows and some opaque rows under band keys, so the backends do not each need their own idea of what a near duplicate is.
+All three get the same test suite (`FingerprintStoreContract`, `DeadLetterStoreContract` and `RevisionStoreContract` in the test project). The near duplicate logic is written once in the core library. A backend only stores the exact hash rows and some opaque rows under band keys, so the backends do not each need their own idea of what a near duplicate is.
 
 ### SQLite
 
-Tables are created on first use: `rechunk_exact`, `rechunk_band_entry`, `rechunk_band_key` and `rechunk_dead_letter`. `SqliteFingerprintBackend.SchemaSql` has the statements if you prefer your own migrations. The database is put in WAL mode.
+Tables are created on first use: `rechunk_exact`, `rechunk_band_entry`, `rechunk_band_key` and `rechunk_dead_letter`, plus `rechunk_doc`, `rechunk_doc_chunk`, `rechunk_ref` and `rechunk_alias` for revisions (see [revisions.md](revisions.md)). A database made by an older version gets the new `language` column on its dead letters when it is opened. `SqliteFingerprintBackend.SchemaSql` has the statements if you prefer your own migrations. The database is put in WAL mode.
 
 SQLite lets one writer at a time in, so many workers on one file wait for each other (the connection default is a 30 second busy timeout). That is fine for one machine and a modest rate. Use a file, not `:memory:`, because every call opens its own connection.
 

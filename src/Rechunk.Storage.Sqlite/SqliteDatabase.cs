@@ -54,11 +54,83 @@ internal sealed class SqliteDatabase
             reason    TEXT    NOT NULL,
             attempts  INTEGER NOT NULL,
             failed_at INTEGER NOT NULL,
-            body      TEXT
+            body      TEXT,
+            language  TEXT
         );
 
         CREATE INDEX IF NOT EXISTS ix_rechunk_dead_letter_scope ON rechunk_dead_letter (scope, failed_at);
+
+        CREATE TABLE IF NOT EXISTS rechunk_doc (
+            scope       TEXT    NOT NULL,
+            document    TEXT    NOT NULL,
+            revision    INTEGER NOT NULL,
+            updated_at  INTEGER NOT NULL,
+            PRIMARY KEY (scope, document)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE IF NOT EXISTS rechunk_doc_chunk (
+            scope           TEXT    NOT NULL,
+            document        TEXT    NOT NULL,
+            seq             INTEGER NOT NULL,
+            ordinal         INTEGER NOT NULL,
+            id              TEXT    NOT NULL,
+            target          TEXT    NOT NULL,
+            language        TEXT,
+            first_revision  INTEGER NOT NULL,
+            previous_ordinal INTEGER,
+            replaces        TEXT,
+            PRIMARY KEY (scope, document, seq)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE IF NOT EXISTS rechunk_ref (
+            scope        TEXT    NOT NULL,
+            chunk        TEXT    NOT NULL,
+            count        INTEGER NOT NULL,
+            state        INTEGER NOT NULL,
+            holder       TEXT    NOT NULL,
+            lease_until  INTEGER NOT NULL,
+            PRIMARY KEY (scope, chunk)
+        ) WITHOUT ROWID;
+
+        CREATE TABLE IF NOT EXISTS rechunk_alias (
+            scope   TEXT NOT NULL,
+            target  TEXT NOT NULL,
+            alias   TEXT NOT NULL,
+            PRIMARY KEY (scope, target, alias)
+        ) WITHOUT ROWID;
         """;
+
+    // Changes for databases that an older version created. CREATE TABLE IF NOT EXISTS does not touch an existing table.
+    private static void Migrate(SqliteConnection connection)
+    {
+        if (!HasColumn(connection, "rechunk_dead_letter", "language"))
+        {
+            try
+            {
+                Execute(connection, "ALTER TABLE rechunk_dead_letter ADD COLUMN language TEXT;");
+            }
+            catch (SqliteException) when (HasColumn(connection, "rechunk_dead_letter", "language"))
+            {
+                // another process added it between our check and our change
+            }
+        }
+    }
+
+    private static bool HasColumn(SqliteConnection connection, string table, string column)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = $"PRAGMA table_info({table});";
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            if (string.Equals(reader.GetString(1), column, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
 
     public SqliteConnection Open()
     {
@@ -74,6 +146,7 @@ internal sealed class SqliteDatabase
                 {
                     Execute(connection, "PRAGMA journal_mode = WAL;");
                     Execute(connection, Schema);
+                    Migrate(connection);
                     Ready.Add(_connectionString);
                 }
                 catch

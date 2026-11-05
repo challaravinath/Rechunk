@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Rechunk writer for any Microsoft.Extensions.VectorData collection. Early work in progress.</Description>
+    <Description>Rechunk writer for any Microsoft.Extensions.VectorData collection. Upserts and deletes in batches, and the delete path that revision tracking needs.</Description>
   </PropertyGroup>
 
   <ItemGroup>

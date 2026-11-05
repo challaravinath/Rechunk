@@ -138,6 +138,18 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
         return ValueTask.FromResult(command.ExecuteNonQuery() > 0);
     }
 
+    public ValueTask<bool> RemoveOwnedAsync(string scope, ReadOnlyMemory<byte> exactHash, ChunkId owner, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using var connection = _db.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "DELETE FROM rechunk_exact WHERE scope = $scope AND hash = $hash AND committed = 1 AND chunk = $chunk";
+        command.Parameters.AddWithValue("$scope", scope);
+        command.Parameters.AddWithValue("$hash", exactHash.ToArray());
+        command.Parameters.AddWithValue("$chunk", owner.Value);
+        return ValueTask.FromResult(command.ExecuteNonQuery() > 0);
+    }
+
     public ValueTask PutAsync(
         string scope, BandKind kind, string id, byte[] payload, IReadOnlyList<BandKey> keys, CancellationToken ct = default)
     {

@@ -49,6 +49,15 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
         return 2
         """;
 
+    private const string RemoveOwnedScript = """
+        local row = redis.call('HMGET', KEYS[1], 'chunk', 'committed')
+        if row[1] and row[2] == '1' and row[1] == ARGV[1] then
+          redis.call('DEL', KEYS[1])
+          return 1
+        end
+        return 0
+        """;
+
     private const string ReleaseScript = """
         local row = redis.call('HMGET', KEYS[1], 'chunk', 'committed', 'holder')
         if row[1] and row[2] ~= '1' and row[3] == ARGV[2] and row[1] == ARGV[1] then
@@ -143,6 +152,14 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
     {
         ct.ThrowIfCancellationRequested();
         return await Db.KeyDeleteAsync(_keys.Exact(scope, exactHash.Span)).ConfigureAwait(false);
+    }
+
+    public async ValueTask<bool> RemoveOwnedAsync(string scope, ReadOnlyMemory<byte> exactHash, ChunkId owner, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var reply = await Db.ScriptEvaluateAsync(
+            RemoveOwnedScript, [_keys.Exact(scope, exactHash.Span)], [owner.Value]).ConfigureAwait(false);
+        return (int)reply == 1;
     }
 
     public async ValueTask PutAsync(

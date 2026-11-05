@@ -57,6 +57,15 @@ public interface IVectorSink
 
     ValueTask DeleteAsync(IReadOnlyList<ChunkId> ids, CancellationToken ct = default);
 
+    /// <summary>
+    /// Deletes by scope and id. Revision tracking calls this one. A chunk id comes from the text, so the same text in two
+    /// scopes has the same id: if your records are keyed by id alone, a delete here removes the vector for every scope.
+    /// Key your records by scope and id (EmbeddedChunk carries the scope) and override this method to avoid that.
+    /// The default just calls the method above, so existing sinks keep working. Deleting an id that is not there
+    /// must not fail, because a delete can be repeated.
+    /// </summary>
+    ValueTask DeleteAsync(string scope, IReadOnlyList<ChunkId> ids, CancellationToken ct = default) => DeleteAsync(ids, ct);
+
     IAsyncEnumerable<ChunkId> ListIdsAsync(string scope, CancellationToken ct = default);
 }
 
@@ -66,7 +75,10 @@ public interface IRevisionTracker
     ValueTask<RevisionPlan> PlanAsync(
         DocumentId document, string scope, IReadOnlyList<ChunkInput> newChunks, CancellationToken ct = default);
 
-    /// <summary>Upsert the new vectors, log the delete, delete the old vectors, write the audit events.</summary>
+    /// <summary>
+    /// Carries out a plan: embeds the new and changed chunks and writes their vectors, switches the document to the new
+    /// revision, then deletes the vectors and fingerprints of chunks that nothing uses any more and writes the audit events.
+    /// </summary>
     ValueTask<RevisionResult> ApplyAsync(
         RevisionPlan plan, IChunkEmbedder embedder, IVectorSink sink, CancellationToken ct = default);
 
