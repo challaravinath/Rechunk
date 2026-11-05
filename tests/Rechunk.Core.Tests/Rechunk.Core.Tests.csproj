@@ -21,6 +21,7 @@
     <ProjectReference Include="..\..\src\Rechunk.Core\Rechunk.Core.csproj" />
     <ProjectReference Include="..\..\src\Rechunk.Storage.Sqlite\Rechunk.Storage.Sqlite.csproj" />
     <ProjectReference Include="..\..\src\Rechunk.Storage.Redis\Rechunk.Storage.Redis.csproj" />
+    <ProjectReference Include="..\..\src\Rechunk.Extensions.VectorData\Rechunk.Extensions.VectorData.csproj" />
   </ItemGroup>
 
 </Project>

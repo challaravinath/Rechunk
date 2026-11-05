@@ -585,6 +585,132 @@ public abstract class FingerprintStoreContract : IDisposable
         Assert.Equal(2, sink.StoredIds.Count);
     }
 
+    // ---- forgetting a chunk ----
+
+    private static IReadOnlyList<ReadOnlyMemory<byte>> Hashes(params byte[][] hashes) => hashes.Select(h => (ReadOnlyMemory<byte>)h).ToList();
+
+    [SkippableFact]
+    public async Task Forgetting_a_chunk_removes_its_exact_row_and_the_text_can_be_claimed_again()
+    {
+        var store = Store();
+        var claim = Claim("a", "w1");
+        await store.ClaimAsync(claim);
+        await store.CommitAsync(Commit(claim));
+
+        var removed = await store.ForgetAsync(Scope, claim.Id, Hashes(claim.ExactHash.ToArray()));
+
+        Assert.Equal(1, removed);
+        Assert.Null(await store.Exact.FindAsync(Scope, claim.ExactHash));
+        var again = await store.ClaimAsync(Claim("a", "w2"));
+        Assert.Equal(ClaimStatus.Claimed, again.Status);
+    }
+
+    [SkippableFact]
+    public async Task Forgetting_leaves_a_row_that_belongs_to_another_chunk()
+    {
+        var store = Store();
+        var claim = Claim("a", "w1");
+        await store.ClaimAsync(claim);
+        await store.CommitAsync(Commit(claim));
+
+        var removed = await store.ForgetAsync(Scope, new ChunkId("someone-else"), Hashes(claim.ExactHash.ToArray()));
+
+        Assert.Equal(0, removed);
+        Assert.Equal(claim.Id, await store.Exact.FindAsync(Scope, claim.ExactHash));
+    }
+
+    [SkippableFact]
+    public async Task Forgetting_leaves_a_claim_that_is_still_pending()
+    {
+        var store = Store();
+        var claim = Claim("a", "w1");
+        await store.ClaimAsync(claim);
+
+        var removed = await store.ForgetAsync(Scope, claim.Id, Hashes(claim.ExactHash.ToArray()));
+
+        Assert.Equal(0, removed);
+        Assert.Equal(CommitStatus.Committed, await store.CommitAsync(Commit(claim)));
+    }
+
+    [SkippableFact]
+    public async Task Forgetting_removes_the_rows_of_duplicates_that_were_stored_as_aliases()
+    {
+        var store = Store();
+        var owner = Claim("a", "w1");
+        await store.ClaimAsync(owner);
+        await store.CommitAsync(Commit(owner));
+
+        var alias = Claim("b", "w2");
+        await store.ClaimAsync(alias);
+        await store.CommitAsync(Commit(alias, owner.Id));
+        Assert.Equal(owner.Id, await store.Exact.FindAsync(Scope, alias.ExactHash));
+
+        var removed = await store.ForgetAsync(Scope, owner.Id, Hashes(owner.ExactHash.ToArray(), alias.ExactHash.ToArray()));
+
+        Assert.Equal(2, removed);
+        Assert.Null(await store.Exact.FindAsync(Scope, owner.ExactHash));
+        Assert.Null(await store.Exact.FindAsync(Scope, alias.ExactHash));
+    }
+
+    [SkippableFact]
+    public async Task Forgetting_twice_does_nothing_the_second_time()
+    {
+        var store = Store();
+        var claim = Claim("a", "w1");
+        await store.ClaimAsync(claim);
+        await store.CommitAsync(Commit(claim));
+
+        Assert.Equal(1, await store.ForgetAsync(Scope, claim.Id, Hashes(claim.ExactHash.ToArray())));
+        Assert.Equal(0, await store.ForgetAsync(Scope, claim.Id, Hashes(claim.ExactHash.ToArray())));
+    }
+
+    [SkippableFact]
+    public async Task Forgetting_is_limited_to_its_scope()
+    {
+        var store = Store();
+        var here = Claim("a", "w1");
+        var there = Claim("a", "w1", scope: "tenant-b");
+        await store.ClaimAsync(here);
+        await store.CommitAsync(Commit(here));
+        await store.ClaimAsync(there);
+        await store.CommitAsync(Commit(there));
+
+        await store.ForgetAsync(Scope, here.Id, Hashes(here.ExactHash.ToArray()));
+
+        Assert.Null(await store.Exact.FindAsync(Scope, here.ExactHash));
+        Assert.Equal(there.Id, await store.Exact.FindAsync("tenant-b", there.ExactHash));
+    }
+
+    [SkippableFact]
+    public async Task A_forgotten_chunk_is_no_longer_found_as_a_near_duplicate_and_the_text_is_unique_again()
+    {
+        var one = Store();
+        var two = Store();
+
+        var first = await Worker(one).DeduplicateAsync(Scope, Chunks(Text(Long)), new DedupClaimOptions("m1"));
+        await CommitAll(one, first);
+        var id = first.Decisions[0].Id;
+        var claim = first.Claims.First();
+
+        var edited = Edited(Long, 100);
+        var before = await Worker(two).DeduplicateAsync(Scope, Chunks(edited), new DedupClaimOptions("m2"));
+        Assert.Equal(DedupOutcome.Duplicate, before.Decisions[0].Outcome);
+        foreach (var pending in before.Claims)
+        {
+            await two.ReleaseAsync(pending.ToRelease());
+        }
+
+        await one.ForgetAsync(Scope, id, Hashes(claim.ExactHash.ToArray()));
+
+        var exact = await Worker(two).DeduplicateAsync(Scope, Chunks(Text(Long)), new DedupClaimOptions("m3"));
+        Assert.Equal(DedupOutcome.Unique, exact.Decisions[0].Outcome);
+        await two.ReleaseAsync(exact.Claims.First().ToRelease());
+
+        // a different edit of the same text, so no exact row of an earlier skipped duplicate gets in the way
+        var near = await Worker(two).DeduplicateAsync(Scope, Chunks(Edited(Long, 150)), new DedupClaimOptions("m4"));
+        Assert.Equal(DedupOutcome.Unique, near.Decisions[0].Outcome);
+    }
+
     private ChunkIngestor Ingestor(IFingerprintStore store, ScriptedEmbedder embedder, RecordingSink sink, IDeadLetterStore deadLetters)
     {
         var pipeline = RechunkPipeline.CreateBuilder()

@@ -27,10 +27,14 @@ public sealed class MinHasher
     public const ulong PermutationSeed = 0x5045524D55544531UL;
 
     private readonly int _shingleSize;
+    private readonly int _charShingleSize;
     private readonly ulong[] _seeds;
 
-    public MinHasher(MinHashOptions options)
+    // charShingleSize: Characters per shingle for runs of text without spaces (Chinese, Japanese, Thai).
+    public MinHasher(MinHashOptions options, int charShingleSize = 3)
     {
+        ArgumentOutOfRangeException.ThrowIfLessThan(charShingleSize, 1);
+        _charShingleSize = charShingleSize;
         ArgumentNullException.ThrowIfNull(options);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.ShingleSize, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(options.Permutations, 1);
@@ -86,17 +90,8 @@ public sealed class MinHasher
         var signature = new uint[_seeds.Length];
         Array.Fill(signature, uint.MaxValue);
 
-        var shingleCount = Math.Max(1, tokens.Count - _shingleSize + 1);
-        var width = Math.Min(_shingleSize, tokens.Count);
-
-        for (var start = 0; start < shingleCount; start++)
+        foreach (var h in Shingler.Hashes(tokens, _shingleSize, _charShingleSize, ShingleSeed))
         {
-            var h = ShingleSeed;
-            for (var i = 0; i < width; i++)
-            {
-                h = StableHash64.Combine(h, tokens[start + i].Hash);
-            }
-
             for (var slot = 0; slot < signature.Length; slot++)
             {
                 var value = (uint)(StableHash64.Mix(h ^ _seeds[slot]) >> 32);

@@ -17,7 +17,7 @@ public enum DeadLetterStage
 
 /// <summary>
 /// A chunk that kept failing. It holds enough to find the chunk again and see why it failed, and no chunk text,
-/// unless StoreTextInDeadLetters is switched on. Reason is the exception type and a shortened message.
+/// unless StoreTextInDeadLetters is switched on. Language is the tag the chunk had, so a replay puts it back in the right group. Reason is the exception type and a shortened message.
 /// </summary>
 public sealed record DeadLetter(
     string Id,
@@ -29,7 +29,8 @@ public sealed record DeadLetter(
     string Reason,
     int Attempts,
     DateTimeOffset FailedAt,
-    string? Text = null);
+    string? Text = null,
+    string? Language = null);
 
 public sealed record DeadLetterQuery(
     string? Scope = null,

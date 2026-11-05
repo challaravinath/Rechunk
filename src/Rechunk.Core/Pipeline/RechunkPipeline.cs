@@ -69,6 +69,26 @@ public sealed class RechunkPipeline
         return ChunkId.FromExactHash(_fingerprinter.Compute(text).ExactHash.Span);
     }
 
+    /// <summary>The id a chunk gets, with its language. Same text and same language, same id.</summary>
+    public ChunkId IdFor(ChunkInput chunk)
+    {
+        ArgumentNullException.ThrowIfNull(chunk);
+        return LanguageTags.IdFor(_fingerprinter.Compute(chunk.Text).ExactHash.Span, LanguageFor(chunk));
+    }
+
+    internal (ChunkId Id, string? Language) Identify(ChunkInput chunk)
+    {
+        var language = _options.Language.Resolve(chunk.Language, chunk.Text);
+        return (LanguageTags.IdFor(_fingerprinter.Compute(chunk.Text).ExactHash.Span, language), language);
+    }
+
+    /// <summary>The language the chunk is matched under: its own tag, else the detector, else null.</summary>
+    public string? LanguageFor(ChunkInput chunk)
+    {
+        ArgumentNullException.ThrowIfNull(chunk);
+        return _options.Language.Resolve(chunk.Language, chunk.Text);
+    }
+
     /// <summary>Looks at a batch of chunks and says which ones are new and which ones are repeats.</summary>
     public ValueTask<DedupReport> DeduplicateAsync(
         string? scope, IReadOnlyList<ChunkInput> chunks, CancellationToken ct = default) =>
@@ -87,10 +107,12 @@ public sealed class RechunkPipeline
     }
 
     private async ValueTask<DedupReport> DeduplicateCoreAsync(
-        string? scope, IReadOnlyList<ChunkInput> chunks, DedupClaimOptions? claimOptions, CancellationToken ct)
+        string? userScope, IReadOnlyList<ChunkInput> chunks, DedupClaimOptions? claimOptions, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(chunks);
-        scope ??= _options.DefaultScope;
+        userScope ??= _options.DefaultScope;
+        var excluded = claimOptions?.NearExclude;
+        var languages = new List<string?>(chunks.Count);
         var holder = claimOptions?.Holder ?? "run-" + Guid.NewGuid().ToString("N");
         var lease = claimOptions?.Lease ?? _options.Store.LeaseDuration;
 
@@ -115,8 +137,14 @@ public sealed class RechunkPipeline
         {
             ct.ThrowIfCancellationRequested();
 
+            // every stage and every claim works inside the scope of the chunk's language, so chunks of different
+            // languages can not match each other
+            var language = _options.Language.Resolve(chunk.Language, chunk.Text);
+            var scope = LanguageTags.ScopeFor(userScope, language);
+            languages.Add(language);
+
             var fingerprint = _fingerprinter.Compute(chunk.Text);
-            var id = ChunkId.FromExactHash(fingerprint.ExactHash.Span);
+            var id = LanguageTags.IdFor(fingerprint.ExactHash.Span, language);
 
             // Stage 1: have we seen exactly this text?
             var exact = await _exactIndex.FindAsync(scope, fingerprint.ExactHash, ct).ConfigureAwait(false);
@@ -143,7 +171,7 @@ public sealed class RechunkPipeline
             ChunkClaim? claim = null;
 
             // Stages 2 and 3: have we seen something very close to it?
-            var near = await FindNearAsync(scope, fingerprint, dryRunSimHash, dryRunMinHash, chunk, ct).ConfigureAwait(false);
+            var near = await FindNearAsync(scope, fingerprint, dryRunSimHash, dryRunMinHash, chunk, excluded, ct).ConfigureAwait(false);
 
             // A near duplicate that is not embedded stands for the canonical chunk from now on. A flagged one is
             // embedded like any new chunk, so it is stored as itself.
@@ -234,7 +262,12 @@ public sealed class RechunkPipeline
             LogMatch(chunk, near.Stage, near.Existing, near.HammingDistance, near.EstimatedJaccard);
         }
 
-        return new DedupReport(scope, _options.DryRun, decisions);
+        for (var i = 0; i < decisions.Count; i++)
+        {
+            decisions[i] = decisions[i] with { Language = languages[i] };
+        }
+
+        return new DedupReport(userScope, _options.DryRun, decisions);
     }
 
     private void AddToNearIndexes(
@@ -257,6 +290,7 @@ public sealed class RechunkPipeline
         SimHashBandIndex? simHashOverlay,
         MinHashLshIndex? minHashOverlay,
         ChunkInput chunk,
+        IReadOnlySet<ChunkId>? excluded,
         CancellationToken ct)
     {
         var minHashOn = _minHashIndex is not null && fingerprint.HasMinHash;
@@ -271,7 +305,9 @@ public sealed class RechunkPipeline
                 all = all.Concat(simHashOverlay.Find(scope, fingerprint.SimHash));
             }
 
-            foreach (var candidate in all.OrderBy(c => c.HammingDistance).ThenBy(c => c.Existing.Value, StringComparer.Ordinal))
+            foreach (var candidate in all
+                .Where(c => excluded is null || !excluded.Contains(c.Existing))
+                .OrderBy(c => c.HammingDistance).ThenBy(c => c.Existing.Value, StringComparer.Ordinal))
             {
                 if (Blocked(fingerprint, candidate, chunk))
                 {
@@ -307,6 +343,7 @@ public sealed class RechunkPipeline
             }
 
             foreach (var candidate in all
+                .Where(c => excluded is null || !excluded.Contains(c.Existing))
                 .OrderByDescending(c => c.EstimatedJaccard)
                 .ThenBy(c => c.Existing.Value, StringComparer.Ordinal))
             {

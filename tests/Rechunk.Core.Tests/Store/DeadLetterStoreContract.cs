@@ -17,9 +17,10 @@ public abstract class DeadLetterStoreContract : IDisposable
         DeadLetterStage stage = DeadLetterStage.Embed,
         int minutes = 0,
         string? document = "doc-1",
-        string? text = null) =>
+        string? text = null,
+        string? language = null) =>
         new(id, scope, new ChunkId("chunk-" + id), document is null ? null : new DocumentId(document), 3, stage,
-            "TimeoutException: the model did not answer", 3, Start.AddMinutes(minutes), text);
+            "TimeoutException: the model did not answer", 3, Start.AddMinutes(minutes), text, language);
 
     private static readonly DeadLetterQuery All = new();
 
@@ -43,6 +44,20 @@ public abstract class DeadLetterStoreContract : IDisposable
         Assert.Equal(letter.Attempts, read.Attempts);
         Assert.Equal(letter.FailedAt, read.FailedAt);
         Assert.Null(read.Text);
+    }
+
+    [SkippableFact]
+    public async Task The_language_of_a_letter_comes_back_and_a_letter_without_one_stays_without()
+    {
+        var store = Create();
+        await store.AddAsync(Letter("fr", language: "fr"));
+        await store.AddAsync(Letter("none"));
+
+        Assert.Equal("fr", (await store.GetAsync("fr"))!.Language);
+        Assert.Null((await store.GetAsync("none"))!.Language);
+        var listed = (await store.ListAsync(All)).ToDictionary(l => l.Id, l => l.Language);
+        Assert.Equal("fr", listed["fr"]);
+        Assert.Null(listed["none"]);
     }
 
     [SkippableFact]

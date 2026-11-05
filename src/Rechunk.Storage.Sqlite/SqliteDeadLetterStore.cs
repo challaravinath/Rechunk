@@ -26,8 +26,8 @@ public sealed class SqliteDeadLetterStore : IDeadLetterStore
         using var connection = _db.Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            INSERT OR REPLACE INTO rechunk_dead_letter (id, scope, chunk, document, ordinal, stage, reason, attempts, failed_at, body)
-            VALUES ($id, $scope, $chunk, $document, $ordinal, $stage, $reason, $attempts, $failedAt, $body)
+            INSERT OR REPLACE INTO rechunk_dead_letter (id, scope, chunk, document, ordinal, stage, reason, attempts, failed_at, body, language)
+            VALUES ($id, $scope, $chunk, $document, $ordinal, $stage, $reason, $attempts, $failedAt, $body, $language)
             """;
         command.Parameters.AddWithValue("$id", deadLetter.Id);
         command.Parameters.AddWithValue("$scope", deadLetter.Scope);
@@ -39,6 +39,7 @@ public sealed class SqliteDeadLetterStore : IDeadLetterStore
         command.Parameters.AddWithValue("$attempts", deadLetter.Attempts);
         command.Parameters.AddWithValue("$failedAt", deadLetter.FailedAt.UtcTicks);
         command.Parameters.AddWithValue("$body", (object?)deadLetter.Text ?? DBNull.Value);
+        command.Parameters.AddWithValue("$language", (object?)deadLetter.Language ?? DBNull.Value);
         command.ExecuteNonQuery();
         return ValueTask.CompletedTask;
     }
@@ -95,7 +96,7 @@ public sealed class SqliteDeadLetterStore : IDeadLetterStore
     }
 
     private const string Select =
-        "SELECT id, scope, chunk, document, ordinal, stage, reason, attempts, failed_at, body FROM rechunk_dead_letter";
+        "SELECT id, scope, chunk, document, ordinal, stage, reason, attempts, failed_at, body, language FROM rechunk_dead_letter";
 
     private static string Where(SqliteCommand command, DeadLetterQuery q)
     {
@@ -137,5 +138,6 @@ public sealed class SqliteDeadLetterStore : IDeadLetterStore
         r.GetString(6),
         r.GetInt32(7),
         new DateTimeOffset(r.GetInt64(8), TimeSpan.Zero),
-        r.IsDBNull(9) ? null : r.GetString(9));
+        r.IsDBNull(9) ? null : r.GetString(9),
+        r.IsDBNull(10) ? null : r.GetString(10));
 }

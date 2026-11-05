@@ -57,4 +57,10 @@ public interface IFingerprintBackend : IBandStorage
 
     /// <summary>Removes the row whatever its state. Says whether it was there.</summary>
     ValueTask<bool> RemoveAsync(string scope, ReadOnlyMemory<byte> exactHash, CancellationToken ct = default);
+
+    /// <summary>
+    /// Removes the row only when it is committed and belongs to the owner (a chunk's own hash and the hashes of the
+    /// duplicates that point at it). A row that is pending, or owned by another chunk, stays. Says whether a row went.
+    /// </summary>
+    ValueTask<bool> RemoveOwnedAsync(string scope, ReadOnlyMemory<byte> exactHash, ChunkId owner, CancellationToken ct = default);
 }

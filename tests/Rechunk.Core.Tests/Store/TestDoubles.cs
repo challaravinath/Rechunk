@@ -64,7 +64,37 @@ public sealed class RecordingSink : IVectorSink
         return ValueTask.CompletedTask;
     }
 
-    public ValueTask DeleteAsync(IReadOnlyList<ChunkId> ids, CancellationToken ct = default) => ValueTask.CompletedTask;
+    public int DeleteCalls;
+
+    /// <summary>Set by a test to make deletes fail.</summary>
+    public Func<IReadOnlyList<ChunkId>, Exception?>? OnDelete { get; set; }
+
+    public ValueTask DeleteAsync(IReadOnlyList<ChunkId> ids, CancellationToken ct = default)
+    {
+        Interlocked.Increment(ref DeleteCalls);
+        if (OnDelete?.Invoke(ids) is { } error)
+        {
+            throw error;
+        }
+
+        lock (_gate)
+        {
+            foreach (var id in ids)
+            {
+                _stored.Remove(id.Value);
+            }
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    public EmbeddedChunk? Get(string id)
+    {
+        lock (_gate)
+        {
+            return _stored.GetValueOrDefault(id);
+        }
+    }
 
     public async IAsyncEnumerable<ChunkId> ListIdsAsync(string scope, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
@@ -96,4 +126,8 @@ public sealed class FlakyStore(IFingerprintStore inner) : IFingerprintStore
         OnCommit?.Invoke(request) is { } error ? throw error : inner.CommitAsync(request, ct);
 
     public ValueTask<bool> ReleaseAsync(ReleaseRequest request, CancellationToken ct = default) => inner.ReleaseAsync(request, ct);
+
+    public ValueTask<int> ForgetAsync(
+        string scope, ChunkId owner, IReadOnlyList<ReadOnlyMemory<byte>> exactHashes, CancellationToken ct = default) =>
+        inner.ForgetAsync(scope, owner, exactHashes, ct);
 }

@@ -27,12 +27,16 @@ public sealed class SimHasher
     public const ulong DefaultSeed = 0x52454348554E4B31UL;
 
     private readonly int _shingleSize;
+    private readonly int _charShingleSize;
     private readonly ulong _seed;
 
-    public SimHasher(int shingleSize = 3, ulong seed = DefaultSeed)
+    // charShingleSize: Characters per shingle for runs of text without spaces (Chinese, Japanese, Thai).
+    public SimHasher(int shingleSize = 3, ulong seed = DefaultSeed, int charShingleSize = 3)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(shingleSize, 1);
+        ArgumentOutOfRangeException.ThrowIfLessThan(charShingleSize, 1);
         _shingleSize = shingleSize;
+        _charShingleSize = charShingleSize;
         _seed = seed;
     }
 
@@ -54,17 +58,8 @@ public sealed class SimHasher
         Span<int> columns = stackalloc int[64];
         columns.Clear();
 
-        var shingleCount = Math.Max(1, tokens.Count - _shingleSize + 1);
-        var width = Math.Min(_shingleSize, tokens.Count);
-
-        for (var start = 0; start < shingleCount; start++)
+        foreach (var h in Shingler.Hashes(tokens, _shingleSize, _charShingleSize, _seed))
         {
-            var h = _seed;
-            for (var i = 0; i < width; i++)
-            {
-                h = StableHash64.Combine(h, tokens[start + i].Hash);
-            }
-
             for (var bit = 0; bit < 64; bit++)
             {
                 columns[bit] += ((h >> bit) & 1UL) == 1UL ? 1 : -1;

@@ -16,6 +16,18 @@ internal sealed class RedisKeys(string prefix)
     public RedisKey Band(string scope, BandKind kind, BandKey key) =>
         $"{prefix}:{{{Tag(scope)}}}:b{(int)kind}:{key.Band}:{key.Key:x16}";
 
+    public RedisKey Doc(string scope, string document) => $"{prefix}:{{{Tag(scope)}}}:d:{document}";
+
+    public RedisKey Ref(string scope, string chunk) => $"{prefix}:{{{Tag(scope)}}}:r:{chunk}";
+
+    public RedisKey Aliases(string scope, string chunk) => $"{prefix}:{{{Tag(scope)}}}:a:{chunk}";
+
+    // every chunk the revision store knows
+    public RedisKey RefSet(string scope) => $"{prefix}:{{{Tag(scope)}}}:rs";
+
+    // chunks waiting for a sweep, scored by when their lease ends (0 for chunks nobody owns)
+    public RedisKey Pending(string scope) => $"{prefix}:{{{Tag(scope)}}}:pend";
+
     // dead letters share one tag, they are listed across scopes
     public RedisKey DeadLetter(string id) => $"{prefix}:{{dl}}:r:{id}";
 

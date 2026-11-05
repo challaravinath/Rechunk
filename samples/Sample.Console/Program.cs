@@ -63,3 +63,5 @@ foreach (var stage in new[] { MatchStage.Exact, MatchStage.SimHash, MatchStage.M
 {
     Console.WriteLine($"    {stage,-8} {skipped.Count(d => d.Stage == stage)}");
 }
+
+await RevisionDemo.RunAsync();

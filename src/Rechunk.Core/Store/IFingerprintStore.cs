@@ -43,6 +43,15 @@ public interface IFingerprintStore
     /// a claim that belongs to somebody else. Says whether a claim was dropped.
     /// </summary>
     ValueTask<bool> ReleaseAsync(ReleaseRequest request, CancellationToken ct = default);
+
+    /// <summary>
+    /// Takes a committed chunk out of the store for good, for when its vector has been deleted. Removes the exact
+    /// hash rows that belong to the owner (list its own hash and the hashes of the duplicates that point at it) and its
+    /// entries in the SimHash and MinHash indexes. A row that is pending or belongs to another chunk is left alone, so
+    /// text that was claimed again in the meantime is safe. Calling it again does nothing. Returns how many exact rows went.
+    /// </summary>
+    ValueTask<int> ForgetAsync(
+        string scope, ChunkId owner, IReadOnlyList<ReadOnlyMemory<byte>> exactHashes, CancellationToken ct = default);
 }
 
 /// <summary>Ask for a hash. Holder is whatever names one piece of work, for example the queue message id.</summary>

@@ -61,4 +61,26 @@ public class BackedFingerprintStore : IFingerprintStore
         ArgumentNullException.ThrowIfNull(request);
         return _backend.ReleaseAsync(request, ct);
     }
+
+    public async ValueTask<int> ForgetAsync(
+        string scope, ChunkId owner, IReadOnlyList<ReadOnlyMemory<byte>> exactHashes, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(scope);
+        ArgumentNullException.ThrowIfNull(exactHashes);
+
+        // The near entries go first, so a chunk is never findable by its fingerprint after its hash is gone.
+        await _simHash.RemoveAsync(owner, scope, ct).ConfigureAwait(false);
+        await _minHash.RemoveAsync(owner, scope, ct).ConfigureAwait(false);
+
+        var removed = 0;
+        foreach (var hash in exactHashes)
+        {
+            if (await _backend.RemoveOwnedAsync(scope, hash, owner, ct).ConfigureAwait(false))
+            {
+                removed++;
+            }
+        }
+
+        return removed;
+    }
 }

@@ -15,6 +15,12 @@ public sealed class RechunkOptions
     /// <summary>Retries and dead letters, used by the ChunkIngestor.</summary>
     public FailureOptions Failures { get; } = new();
 
+    /// <summary>Language tags, detection and the handling of text that has no spaces.</summary>
+    public LanguageOptions Language { get; } = new();
+
+    /// <summary>Settings for revision tracking and deletes.</summary>
+    public RevisionOptions Revisions { get; } = new();
+
     public DuplicatePolicy OnDuplicate { get; set; } = DuplicatePolicy.Alias;
 
     public RevisionPolicy OnRevision { get; set; } = RevisionPolicy.ReEmbedChanged;
@@ -46,6 +52,9 @@ public sealed class RechunkOptions
         {
             throw new ArgumentOutOfRangeException(nameof(SimHash), "MinWords has to be at least 1.");
         }
+
+        Language.Validate();
+        Revisions.Validate();
 
         if (Store.LeaseDuration <= TimeSpan.Zero)
         {
@@ -184,4 +193,40 @@ public sealed class FailureOptions
 
     /// <summary>Longest reason that is saved with a dead letter. Longer ones are cut.</summary>
     public int MaxReasonLength { get; set; } = 300;
+}
+
+public sealed class RevisionOptions
+{
+    /// <summary>
+    /// How many times a revision is planned again when another worker changed the same document, or a chunk it wanted
+    /// to reuse was being deleted, before it gives up and reports the conflict.
+    /// </summary>
+    public int MaxConflictRetries { get; set; } = 3;
+
+    /// <summary>Wait before planning again after a conflict. Zero means no wait.</summary>
+    public TimeSpan ConflictDelay { get; set; } = TimeSpan.FromMilliseconds(200);
+
+    /// <summary>How long a worker owns a chunk it is deleting. If it dies, another one finishes the job after this.</summary>
+    public TimeSpan RetireLease { get; set; } = TimeSpan.FromMinutes(2);
+
+    /// <summary>Most chunks that one sweep removes in a go.</summary>
+    public int SweepBatchSize { get; set; } = 100;
+
+    internal void Validate()
+    {
+        if (MaxConflictRetries < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(MaxConflictRetries), "MaxConflictRetries can not be negative.");
+        }
+
+        if (ConflictDelay < TimeSpan.Zero || RetireLease <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(RetireLease), "RetireLease has to be above zero and ConflictDelay can not be negative.");
+        }
+
+        if (SweepBatchSize < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(SweepBatchSize), "SweepBatchSize has to be at least 1.");
+        }
+    }
 }
