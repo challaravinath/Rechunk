@@ -21,12 +21,14 @@ What works today:
 - a small pipeline builder, DI setup, dry run mode
 - a shared fingerprint store, so many stateless workers check against the same exact hash, SimHash and MinHash indexes. A chunk is claimed first, committed after its vector is written and released if the work fails, so a failed chunk is never left marked as seen. The in memory indexes are still the default, and there are SQLite and Redis backends (see [docs/shared-store.md](docs/shared-store.md))
 - an ingestor that runs claim, embed, vector write and commit with retries, and writes a dead letter (no chunk text unless you ask for it) when a chunk keeps failing, with list and replay
+- revision tracking and clean deletes: a new version of a document only embeds the chunks that changed, keeps moved paragraphs as they are, and removes the vectors and fingerprints of chunks that are gone, safely with many workers (see [docs/revisions.md](docs/revisions.md))
+- a language tag per chunk, so chunks in different languages are never merged, and character shingles for Chinese, Japanese and Thai, so near duplicates are found in text without spaces (see [docs/languages.md](docs/languages.md))
+- a writer for any Microsoft.Extensions.VectorData collection, with batching, retries and the scoped delete that revisions use
 - the interfaces for the rest
 
 What is still stubs (they throw NotImplementedException with a TODO in the code):
 
-- revision tracking and clean deletes
-- the vector store writer, the Microsoft.Extensions.AI wrapper and the Semantic Kernel helper (these are just project shells for now)
+- the Microsoft.Extensions.AI wrapper and the Semantic Kernel helper (these are just project shells for now)
 
 ## Using the stages
 
@@ -70,6 +72,30 @@ var result = await ingestor.IngestAsync(new IngestRequest(tenant, documentId, ch
 
 `ChunkIngestor` claims the chunks, embeds them, writes the vectors and commits the claims. If a chunk fails more than `Failures.MaxAttempts` times it goes to the dead letter store with its id, scope, the stage that failed, a short reason, the attempt count and the time. `ReplayAsync` tries those again. The details, the guarantees and the limits are in [docs/shared-store.md](docs/shared-store.md), and `samples/Sample.AzureFunction` shows it with a queue trigger.
 
+## Revisions and languages
+
+When a document changes, send the whole new version through the revision tracker:
+
+```csharp
+var result = await tracker.ReviseAsync(
+    new DocumentId("handbook"), "tenant-1", chunks, embedder, sink, holder: message.Id);
+
+// result.Embedded: chunks that were new or edited
+// result.Kept and result.Moved: chunks that were already there, no embedding call
+// result.Deleted: vectors removed because no document uses them any more
+```
+
+Unchanged chunks keep their vectors, even when a paragraph moved. A chunk is deleted from the vector store and from all three dedup stages once no document uses it, and a chunk that two documents share stays until both let go. The steps are ordered so a crash leaves nothing that a later run can not finish, and `VerifyAsync` lists vectors that have no owner. `DeleteDocumentAsync` and `EraseAsync` remove a whole document. More in [docs/revisions.md](docs/revisions.md).
+
+Chunks can carry a language, and chunks of different languages are never duplicates of each other:
+
+```csharp
+new ChunkInput(0, text, Language: "fr")                   // you say it
+services.AddRechunk(o => o.Language.AutoDetect = true);   // or the built in detector says it
+```
+
+Text in scripts without spaces is cut into characters for SimHash and MinHash, so a one character edit in a Chinese, Japanese or Thai paragraph is still a near duplicate. Details, options and limits are in [docs/languages.md](docs/languages.md).
+
 ## Synthetic measurement
 
 This is made up text, not real documents, so read it as a check that the stages do what they should and not as a result you can expect on your data. The corpus is 4000 chunks of 60 to 150 pseudo words, plus 1500 planted variants (5500 chunks in all), 300 of each kind: the same text with extra whitespace, one word changed, about 2 percent of the words changed, about 5 percent changed, and a changed number or an added "not". A planted variant should be merged when its exact Jaccard to the original is at least 0.85 and the guard does not apply, which is 900 of them. Fixed seed, so the numbers repeat.
@@ -97,21 +123,20 @@ To repeat it: `dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- 
 ## Planned features
 
 - tuning the thresholds on a public document set
-- revision aware updates: only re-embed chunks that changed and delete stale vectors without leaving orphans
-- audit trail per chunk: version, source, time and embedding model
-- deletion by document or source (right to erasure) and logs that never contain chunk text
+- a persistent audit log (revisions write audit events already, but the only log is the in memory one)
+- deletion by source (right to erasure by source, today a document has to be named)
 - MMR style diversity when retrieving
 - a benchmark on a public document set, embedding calls saved against answer quality
-- Microsoft.Extensions.AI, Microsoft.Extensions.VectorData and Semantic Kernel integration
+- Microsoft.Extensions.AI and Semantic Kernel integration
 
 ## Packages
 
 | Package | What it is |
 | --- | --- |
 | Rechunk | the core library (project folder is src/Rechunk.Core) |
-| Rechunk.Storage.Sqlite | SQLite storage for the shared fingerprint store and dead letters |
-| Rechunk.Storage.Redis | Redis storage for the shared fingerprint store and dead letters |
-| Rechunk.Extensions.VectorData | writer for Microsoft.Extensions.VectorData collections |
+| Rechunk.Storage.Sqlite | SQLite storage for the shared fingerprint store, dead letters and revisions |
+| Rechunk.Storage.Redis | Redis storage for the shared fingerprint store, dead letters and revisions |
+| Rechunk.Extensions.VectorData | writer and delete path for Microsoft.Extensions.VectorData collections |
 | Rechunk.Extensions.AI | wrapper for embedding generators |
 | Rechunk.SemanticKernel | Semantic Kernel helpers |
 
