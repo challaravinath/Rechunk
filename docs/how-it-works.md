@@ -8,9 +8,9 @@ A typical RAG ingest splits a document, embeds every piece, and upserts the vect
 
 **Near copies are stored as their own vectors.** A repeated footer, a copied page, or a small edit costs another embedding and shows up again in search. The exact stage hashes the cleaned text with SHA-256. SimHash and MinHash, both off until you turn them on, catch text that is close but not the same. Guards keep two chunks apart when a number or a "not" changed, or when the only change is an identifier.
 
-On 2500 files from [dotnet/docs](https://github.com/dotnet/docs) at commit `82937f4` the default pipeline (SimHash distance 3, MinHash 0.85, guards on) saw 54085 chunks and skipped 11675 of them, 21.6%: 11610 exact, 21 SimHash, 44 MinHash. That sweep took 1136 ms, 47610 chunks per second. Of 20 near pairs read from that run, 16 were true duplicates. Before the short chunk, code, and identifier guards, the same sample skipped 11873 (22.0%: 11610 exact, 117 SimHash, 146 MinHash) and 4 of 10 near pairs were true duplicates. The settings and the pair notes are in [benchmarks/dotnet-docs.md](benchmarks/dotnet-docs.md).
+On 2500 of 13555 files from [dotnet/docs](https://github.com/dotnet/docs) at commit `82937f4` the default pipeline (SimHash distance 3, MinHash 0.85, guards on) saw 54085 chunks and skipped 11675 embeds, 21.6%: 11610 exact, 21 SimHash, 44 MinHash. That sweep row took 1136 ms, 47610 chunks per second. A hand check of 20 of the 65 near pairs called 16 true duplicates. That is not a score of every near pair. Before the short chunk, code, and identifier guards, the same sample skipped 11873 (22.0%: 11610 exact, 117 SimHash, 146 MinHash), and a hand check of 10 of 263 near pairs called 4 true duplicates. The settings and the pair notes are in [benchmarks/dotnet-docs.md](benchmarks/dotnet-docs.md).
 
-On the PAWS wiki labeled final test split (8000 pairs) the same defaults merged 34 true and 7 false, precision 82.9% and recall 1.0%. The other settings are in [benchmarks/paws.md](benchmarks/paws.md).
+On the PAWS wiki labeled final test split (8000 pairs) the same defaults merged 41 pairs, 34 labeled paraphrases and 7 not. Precision 82.9% is 34 of 41. Recall 1.0% is 34 of 3536. Those paraphrases are rewordings, not near copies, so the recall stays low. 4 of the 7 wrong merges are identical strings that PAWS labels as different. The other settings are in [benchmarks/paws.md](benchmarks/paws.md). Planted edits on made up text are in [benchmarks/synthetic.md](benchmarks/synthetic.md). Neither run scores answer quality. The docs run is one English corpus.
 
 **Stateless workers have nowhere safe to share dedup state.** Two instances both treat a chunk as new, or one marks it seen and dies before the vector is written. SQLite (one machine) or Redis (many instances) holds the exact hashes and the near indexes. A worker claims the hash first and commits only after the vector write. The claim has a lease. A chunk that keeps failing is written to the dead letter store and can be replayed. The in memory indexes know only the process they live in.
 
@@ -66,7 +66,7 @@ When one chunk has findings with different policies, the strictest wins. One Blo
 
 **MinHash.** A signature of 128 numbers, from the same kind of shingles, stable across platforms. The estimate of Jaccard similarity is the share of equal slots, so with 128 slots it is off by about 0.04 either way. Locality sensitive hashing keeps only pairs that share a whole band. At the default threshold of 0.85 that is 9 bands of 14 rows. A pair at similarity s is a candidate with probability 1 - (1 - s^14)^9. Every candidate is checked with the real estimate, so the index can miss a pair and does not accept one the estimate rejects.
 
-When both near stages are on, MinHash confirms a SimHash hit (`ConfirmWithMinHash`, the default). It also runs on its own for close pairs SimHash missed. You can turn confirmation off and trust SimHash.
+When both near stages are on, MinHash confirms a SimHash hit (`ConfirmWithMinHash`, the default). It also runs on its own for close pairs SimHash missed. You can turn confirmation off and trust SimHash. The builder calls, and the point where the LSH curve is steepest, are in [stages.md](stages.md).
 
 **Guards.** These apply only to the near stages. The exact stage still runs.
 
@@ -183,6 +183,35 @@ You can also erase by the exact text (masking is applied the same way as ingest,
 
 Erasing does not touch your source documents, the chunker's output, or the embedding provider. It does not delete audit events. The steps and the half finished case are in [erasure.md](erasure.md).
 
+## Status
+
+Version 0.1.0 is the first set of packages. They are not on NuGet until a release tag is published, and the API can still change.
+
+What works today:
+
+- cleaning up text and the exact hash stage (SHA-256), with duplicate detection per scope
+- the SimHash stage (off by default): a 64 bit fingerprint over word shingles and an in memory index that finds chunks within a few bits of each other, per scope and safe to use from several threads
+- the MinHash stage (off by default): a signature of 128 numbers per chunk (word shingles, seeded stable hashing, same values on every platform) and an in memory LSH index that finds chunks whose estimated Jaccard similarity is at or above the threshold (0.85 by default), per scope and safe to use from several threads
+- all three stages working together in one pipeline. A chunk that matches an earlier stage never reaches the later ones. When SimHash and MinHash are both on, MinHash confirms what SimHash finds (you can turn that off and trust SimHash), and it also catches looser near duplicates that SimHash misses
+- a guard that keeps two chunks apart when their numbers or "not" style words differ, so "30 days" and "60 days" are not merged, and another that does the same when the only difference is an identifier (an API name, a snippet id, CamelCase, a dotted name)
+- every decision records the stage that matched, which chunk it is a duplicate of, the SimHash distance and the Jaccard estimate
+- a small pipeline builder, DI setup, dry run mode
+- a shared fingerprint store, so many stateless workers check against the same exact hash, SimHash and MinHash indexes. A chunk is claimed first, committed after its vector is written and released if the work fails, so a failed chunk is never left marked as seen. The in memory indexes are still the default, and there are SQLite and Redis backends (see [shared-store.md](shared-store.md))
+- an ingestor that runs claim, embed, vector write and commit with retries, and writes a dead letter (no chunk text unless you ask for it) when a chunk keeps failing, with list and replay
+- revision tracking and clean deletes: a new version of a document only embeds the chunks that changed, keeps moved paragraphs as they are, and removes the vectors and fingerprints of chunks that are gone, safely with many workers (see [revisions.md](revisions.md))
+- a language tag per chunk, so chunks in different languages are never merged, and character shingles for Chinese, Japanese and Thai, so near duplicates are found in text without spaces (see [languages.md](languages.md))
+- a persistent audit trail (in memory, SQLite and Redis, one contract test suite for all three): one event per chunk for new, skipped, aliased, flagged, revised, deleted, erased and dead lettered, with document, revision, stage, scope, language and time, never the chunk text. Queries by document, chunk, source and time range. A failed audit write is retried and then parked in an outbox, so it is not lost (see [audit.md](audit.md))
+- PII and secret scanning before dedup and embedding: a built in detector for cards (Luhn), API keys, emails, phone numbers, Aadhaar (Verhoeff), PAN, SSN and IBAN, a policy per type (Flag, Mask or Block), masking before the chunk is fingerprinted, and an interface for Presidio or Azure AI Language (see [pii.md](pii.md))
+- erasure by document, by source, by text, by chunk and by finding, which removes the vectors, the chunks and every fingerprint, and leaves a receipt that has counts and no content (see [erasure.md](erasure.md))
+- a writer for any Microsoft.Extensions.VectorData collection, with batching, retries and the scoped delete that revisions use
+- the interfaces for the rest
+
+What is still unfinished:
+
+- the Microsoft.Extensions.AI wrapper only forwards each call to the inner generator, so that package is not published
+- the Semantic Kernel helper registers Rechunk on the kernel and does nothing more yet
+- MMR reranking throws NotImplementedException
+
 ## Packages
 
 | Package | Pick it when |
@@ -200,7 +229,7 @@ There is no SQL Server package. `sqlserver-schema.sql` is a sketch of the tables
 
 These match the current code.
 
-- Short chunks are a poor fit for the near stages. Under 20 tokens only the exact hash runs. On the dotnet/docs sample, near pairs under that length were headings, boilerplate and short parameter lines, and one substituted word often changed the meaning. SimHash on a short chunk moves by several bits for a one word edit. MinHash is aimed at "about 90 percent the same", not at a call that sits on the 0.85 line. PAWS recall at the defaults is 1.0% (34 of 3536 paraphrases). Most of those pairs are not close enough to merge, which is what the threshold is for.
+- Short chunks are a poor fit for the near stages. Under 20 tokens only the exact hash runs. On the dotnet/docs sample, near pairs under that length were headings, boilerplate and short parameter lines, and one substituted word often changed the meaning. SimHash on a short chunk moves by several bits for a one word edit. MinHash is aimed at "about 90 percent the same", not at a call that sits on the 0.85 line. PAWS recall at the defaults is 1.0% (34 of 3536 paraphrases). Those pairs are rewordings, not near copies, so most are not close enough to merge.
 - A skipped near duplicate is not inserted into the near indexes, so a chain of small edits stops at the first stored chunk.
 - Two workers that see near duplicates of each other at the same time can both embed. An exact repeat is claimed once. The claim lease does not renew while the embedder is still running.
 - Masking runs before the hash. The chunk id is the hash of the masked text, and two chunks that differ only by an email become one. Turning masking on does not rewrite chunks already stored. The next revision sees the masked form as new text.
@@ -208,3 +237,9 @@ These match the current code.
 - The built in PII rules miss names, street addresses, and numbers that have no checksum and no context word. Data already in the index is not scanned when you enable the scan.
 - The audit log stores no values. It does store the chunk id, which is a hash of the text. With the in memory log, or with events still in the outbox, a query is missing rows. A process that dies after the revision commits and before the audit write leaves a gap in the trail. The vectors are still correct.
 - `Rechunk.Extensions.AI` forwards every text to the inner generator. `Rechunk.SemanticKernel` only registers the core services. Dedup is the pipeline above, not those two packages.
+
+## Planned
+
+- MMR style diversity when retrieving
+- a benchmark on a public document set that checks embedding calls saved against answer quality
+- a Microsoft.Extensions.AI wrapper that skips text already embedded

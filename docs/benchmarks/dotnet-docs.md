@@ -18,6 +18,18 @@ The pipeline is the normal one: exact hash, then SimHash, then MinHash. MinHash 
 
 The tables under "Counts" and the first pair list are from before the short chunk, code, and identifier guards. The later sections are the same sample after those guards, with the defaults below. The SimHash distance and the MinHash threshold did not change.
 
+## What the 21.6% is
+
+The figure for the library is the guards-on default: SimHash distance 3, MinHash 0.85. The run used 2500 of the 13555 markdown files at commit `82937f4`. That was 54085 chunks. It skipped 11675 embeds, 21.6% of 54085. 11610 of the 11675 skips are exact repeats. SimHash skipped 21 and MinHash skipped 44. The 1136 ms and 47610 chunks per second are that row of the sweep: one pass of `DeduplicateAsync` over chunks already in memory.
+
+16 of 20 is a hand check, not a full measurement. After the guards there were 65 near duplicate pairs (21 SimHash and 44 MinHash). I read a random 20 of them, pair seed 2026, and called 16 true duplicates by the rule in "Near duplicate pairs" below. It does not cover the other 45, and it is not a rate for all 54085 chunks.
+
+Before those guards the same files skipped 11873 embeds (22.0%: 11610 exact, 117 SimHash, 146 MinHash). A hand check of 10 of those 263 near pairs called 4 true duplicates.
+
+## What these numbers do not show
+
+No run on this page scores answer quality. The files are one corpus, English markdown from dotnet/docs. The made up words are a separate check, in [synthetic.md](synthetic.md). The labeled pairs are in [paws.md](paws.md).
+
 ## Machine
 
 | | |
@@ -71,7 +83,7 @@ Repeated headings are real chunks with this splitter, and skipping them is the r
 
 I took a random 10 of the 263 near duplicate pairs at the default (pair seed 2026) and a random 10 at MinHash 0.80, which is the setting that skipped the most. I called a pair a true duplicate when the second chunk does not add a distinct fact, name, or code sample. A different API, event, snippet id, config location, or a different instruction is a wrong merge.
 
-Default, SimHash 3 and MinHash 0.85. 4 of 10 true, so about 40% on this sample.
+Default, SimHash 3 and MinHash 0.85. 4 of the 10 I read were true duplicates. There were 263 near pairs, so this is not a rate for all of them.
 
 | | stage | bits | jaccard | judgment | what I saw |
 | --- | --- | --- | --- | --- | --- |
@@ -86,7 +98,7 @@ Default, SimHash 3 and MinHash 0.85. 4 of 10 true, so about 40% on this sample.
 | 9 | MinHash | | 0.930 | wrong merge | code include, different snippet id |
 | 10 | SimHash | 0 | 1.000 | wrong merge | editorconfig category `Style` vs `style` |
 
-MinHash 0.80, SimHash 3. 6 of 10 true, so about 60% on this sample.
+MinHash 0.80, SimHash 3. 6 of the 10 I read were true duplicates. Same limit as the other draw: 10 pairs, not every near pair.
 
 | | stage | bits | jaccard | judgment | what I saw |
 | --- | --- | --- | --- | --- | --- |
@@ -135,7 +147,7 @@ MinHash threshold, with SimHash held at 3:
 
 Exact hits are unchanged (11610, and 8581 of them shorter than 40 characters). Near matches went from 263 to 65. The code includes, fenced samples, and config breadcrumbs that made up most of the old wrong merges are not in the 65.
 
-I took a random 20 of those 65 (pair seed 2026) and used the same rule as before. 16 of 20 true, so 80% on this sample. Before, 4 of 10 were true.
+I took a random 20 of those 65 (pair seed 2026) and used the same rule as before. 16 of the 20 were true duplicates. Before, 4 of 10 were true duplicates. Both numbers are that hand check, not a score of every near pair.
 
 | | stage | bits | jaccard | judgment | what I saw |
 | --- | --- | --- | --- | --- | --- |

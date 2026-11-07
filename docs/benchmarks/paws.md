@@ -53,13 +53,13 @@ The times below are one process. The first setting was slower than the later one
 | minhash 0.80 | 0.80 | on | 85 | 9 | 90.4% | 2.4% | 9 | 4 | 8 | 0 | 68 | 5 | 530 |
 | minhash 0.90 | 0.90 | on | 19 | 4 | 82.6% | 0.5% | 9 | 4 | 7 | 0 | 3 | 0 | 541 |
 
-Percentages are rounded to one decimal from the counts in the same row. Precision for the default is 34 / 41. Recall is 34 / 3536.
+Percentages are rounded to one decimal from the counts in the same row. The default row is 8000 labeled pairs. The pipeline merged 41 of them, 34 with label 1 and 7 with label 0. Precision 82.9% is 34 / 41: 34 of the 41 merges are pairs PAWS calls paraphrases. Recall 1.0% is 34 / 3536.
 
-13 pairs have the same text on both sides. 9 of them are labeled 1 and 4 are labeled 0. Every setting merges all 13 at the exact stage. The 4 labeled 0 are false merges, and no threshold can split them, because the two sentences are the same string. That leaves 3 false merges at the default, all MinHash, with estimates 0.859, 0.898, and 0.852. One swaps "current" and "previous" in a forecast sentence. One changes the name Rechter to Righter. One changes "Rechter was married" to "On the right was married".
+4 of those 7 wrong merges are identical strings that PAWS labels as different. 13 pairs have the same text on both sides. 9 of them are labeled 1 and 4 are labeled 0. Every setting merges all 13 at the exact stage. The 4 labeled 0 are false merges, and no threshold can split them, because the two sentences are the same string. That leaves 3 false merges at the default, all MinHash, with estimates 0.859, 0.898, and 0.852. One swaps "current" and "previous" in a forecast sentence. One changes the name Rechter to Righter. One changes "Rechter was married" to "On the right was married".
 
 With the guards off there are 4 more false merges, 11 instead of 7. One moves "Oldham Council" and "Oldham Metropolitan Borough Council" and comes out at SimHash distance 0 and Jaccard 1.000, so the identifier guard is what keeps it apart. The other three have fewer than 20 tokens. Two of those have a Jaccard estimate of 1.000 (a swap of "southeastern" and "southern", and a comma added after "1920s"). A higher MinHash threshold would not split them. The 20 token floor does. The third changes "ridings" to "cattle" at estimate 0.883.
 
-Recall stays low on every row. Only 34 of the 3536 paraphrases were close enough for the default pipeline to merge.
+Recall stays low on every row. The default merges 34 of the 3536 paraphrases (1.0%). A PAWS paraphrase is a rewording, not a near copy, so most of those pairs sit below the threshold. The low recall is what that set measures.
 
 ## Pairs the near stages could see
 
@@ -83,6 +83,10 @@ MinHash 0.80 finds 51 more true merges (85 instead of 34) and 2 more false merge
 That is 15 fewer true merges to remove 3 wrong near merges, on short sentences. The dotnet/docs sample was left at 0.85 for the same reason: the step was too small to retune from. Three wrong near merges out of 4464 pairs labeled 0 is not a clear reason to move the default.
 
 Turning the guards off finds 67 more true merges and 4 more false merges. Three of those four have a Jaccard estimate of 1.000, so a stricter threshold would not replace the guards. I left the guards on.
+
+## What this does not show
+
+No row here scores answer quality. The sentences are English, from one labeled Wikipedia set. A pair that stays split can still be a paraphrase. Recall is not a rate of missed copies in a document corpus. The docs corpus is a separate run, in [dotnet-docs.md](dotnet-docs.md).
 
 ## Reproduce
 
