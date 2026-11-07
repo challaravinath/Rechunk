@@ -154,6 +154,8 @@ To repeat it: `dotnet run -c Release --project benchmarks/Rechunk.Benchmarks -- 
 
 The synthetic numbers are made up text. I also ran the three stages on real markdown from the public [dotnet/docs](https://github.com/dotnet/docs) repo, on a sample of 2500 files (commit `82937f4`). With SimHash distance 3 and MinHash 0.85 the sample was 54085 chunks, and the pipeline skipped 11675 of them before embedding (21.6%): 11610 exact, 21 SimHash, 44 MinHash. That pass took 1136 ms in the sweep, 47610 chunks per second. I read 20 near duplicate pairs and called 16 of them true duplicates. Before the short chunk, code, and identifier guards, the same sample skipped 11873 (22.0%: 11610 exact, 117 SimHash, 146 MinHash) and 4 of 10 near pairs were true duplicates. The thresholds stay at the defaults. The other settings, the pair notes, and the steps to repeat it are in [docs/benchmarks/dotnet-docs.md](docs/benchmarks/dotnet-docs.md).
 
+On the PAWS wiki labeled final test split (8000 pairs) the same defaults merged 34 true and 7 false, precision 82.9% and recall 1.0%, with the other settings in [docs/benchmarks/paws.md](docs/benchmarks/paws.md).
+
 ## Planned features
 
 - MMR style diversity when retrieving

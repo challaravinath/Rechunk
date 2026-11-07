@@ -38,6 +38,8 @@ public static class Program
         var minHash = 0.85;
         var pairs = 0;
         uint pairSeed = 2026;
+        string? labeled = null;
+        var limit = 8000;
 
         for (var i = 0; i < args.Length; i++)
         {
@@ -64,6 +66,12 @@ public static class Program
                 case "--pairs-seed":
                     pairSeed = uint.Parse(args[++i], CultureInfo.InvariantCulture);
                     break;
+                case "--labeled":
+                    labeled = args[++i];
+                    break;
+                case "--limit":
+                    limit = int.Parse(args[++i], CultureInfo.InvariantCulture);
+                    break;
                 case "--help":
                 case "-h":
                     Usage();
@@ -79,6 +87,25 @@ public static class Program
                     folder = args[i];
                     break;
             }
+        }
+
+        if (labeled is not null)
+        {
+            if (folder is not null || sweep || sample != 0 || pairs != 0 || seed != 2026 || pairSeed != 2026
+                || simHash != 3 || minHash != 0.85)
+            {
+                Console.Error.WriteLine("--labeled runs its own four settings. Do not combine it with a folder or the other switches.");
+                Usage();
+                return 1;
+            }
+
+            if (limit < 1)
+            {
+                Console.Error.WriteLine("--limit has to be at least 1.");
+                return 1;
+            }
+
+            return await LabeledPairs.RunAsync(labeled, limit);
         }
 
         if (string.IsNullOrWhiteSpace(folder) || !Directory.Exists(folder))
@@ -336,7 +363,9 @@ public static class Program
     {
         Console.WriteLine("Usage: Rechunk.RealData <folder> [--sample N] [--seed N] [--sweep]");
         Console.WriteLine("       [--simhash K] [--minhash T] [--pairs N] [--pairs-seed N]");
+        Console.WriteLine("       --labeled <pairs.tsv> [--limit N]");
         Console.WriteLine("Sweep runs SimHash 2, 3 and 4 at MinHash 0.85, then MinHash 0.80, 0.85 and 0.90 at SimHash 3.");
+        Console.WriteLine("--labeled reads id, sentence1, sentence2, label and keeps at most --limit pairs (8000).");
     }
 }
 
