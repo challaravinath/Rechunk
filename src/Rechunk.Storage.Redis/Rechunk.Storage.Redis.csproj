@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Redis storage for the Rechunk shared fingerprint store and dead letters, so many workers check against the same indexes.</Description>
+    <PackageId>Rechunk.Storage.Redis</PackageId>
+    <Description>Redis storage for the Rechunk shared fingerprint store, revisions, audit log and dead letters, so many workers check against the same indexes.</Description>
   </PropertyGroup>
 
   <ItemGroup>

@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>SQLite storage for the Rechunk shared fingerprint store and dead letters.</Description>
+    <PackageId>Rechunk.Storage.Sqlite</PackageId>
+    <Description>SQLite storage for the Rechunk shared fingerprint store, revisions, audit log and dead letters.</Description>
   </PropertyGroup>
 
   <ItemGroup>
