@@ -90,6 +90,8 @@ var result = await tracker.ReviseAsync(
 
 Unchanged chunks keep their vectors, even when a paragraph moved. A chunk is deleted from the vector store and from all three dedup stages once no document uses it, and a chunk that two documents share stays until both let go. The steps are ordered so a crash leaves nothing that a later run can not finish, and `VerifyAsync` lists vectors that have no owner. `DeleteDocumentAsync` and `EraseAsync` remove a whole document. More in [docs/revisions.md](docs/revisions.md).
 
+A sink you write has to implement `DeleteAsync(scope, ids)`. A chunk id comes from the text, so the same paragraph in two scopes has the same id, and the vector has to be stored under both. `VectorDataMapping.ScopedKey` is a string key that does this, and the VectorData sink refuses a key that leaves the scope out. Vectors already stored under the bare chunk id need a new key or a fresh ingest.
+
 Chunks can carry a language, and chunks of different languages are never duplicates of each other:
 
 ```csharp

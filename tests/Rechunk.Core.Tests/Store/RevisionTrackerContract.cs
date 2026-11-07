@@ -163,11 +163,25 @@ public abstract partial class RevisionTrackerContract : IDisposable
     private static Task<RevisionResult> Revise(Worker w, RecordingSink sink, DocumentId doc, IReadOnlyList<ChunkInput> chunks, string? holder = null) =>
         w.Tracker.ReviseAsync(doc, Scope, chunks, w.Embedder, sink, holder).AsTask();
 
-    private static async Task AssertClean(Worker w, RecordingSink sink)
+    private static Task AssertClean(Worker w, RecordingSink sink) => AssertClean(w, sink, Scope);
+
+    private static async Task AssertClean(Worker w, RecordingSink sink, string scope)
     {
-        var report = await w.Tracker.VerifyAsync(Scope, sink);
+        var report = await w.Tracker.VerifyAsync(scope, sink);
         Assert.Empty(report.OrphanVectors);
         Assert.Empty(report.MissingVectors);
+    }
+
+    private static async Task<List<string>> Ids(RecordingSink sink, string scope)
+    {
+        var ids = new List<string>();
+        await foreach (var id in sink.ListIdsAsync(scope))
+        {
+            ids.Add(id.Value);
+        }
+
+        ids.Sort(StringComparer.Ordinal);
+        return ids;
     }
 
     private static string IdOf(Worker w, string text) => w.Pipeline.IdFor(new ChunkInput(0, text)).Value;
@@ -791,6 +805,53 @@ public abstract partial class RevisionTrackerContract : IDisposable
         Assert.Equal(0, result.VectorsDeleted);
     }
 
+    [SkippableFact]
+    public async Task An_erase_in_one_scope_leaves_the_other_scope_and_repeating_it_does_nothing()
+    {
+        var w = NewWorker();
+        var sink = new RecordingSink();
+        var text = Para(1);
+        var id = IdOf(w, text);
+        await w.Tracker.ReviseAsync(One, "scope-a", Doc(text), w.Embedder, sink);
+        await w.Tracker.ReviseAsync(One, "scope-b", Doc(text), w.Embedder, sink);
+        Assert.Equal(new[] { id }, await Ids(sink, "scope-a"));
+        Assert.Equal(new[] { id }, await Ids(sink, "scope-b"));
+
+        var erased = await w.Tracker.EraseAsync(new EraseRequest("scope-a", One, null, "user asked", "support"), sink);
+
+        Assert.Equal(1, erased.VectorsDeleted);
+        Assert.Empty(await Ids(sink, "scope-a"));
+        Assert.Equal(new[] { id }, await Ids(sink, "scope-b"));
+        await AssertClean(w, sink, "scope-b");
+
+        var again = await w.Tracker.EraseAsync(new EraseRequest("scope-a", One, null, "user asked", "support"), sink);
+
+        Assert.Equal(0, again.VectorsDeleted);
+        Assert.Equal(0, again.Documents);
+        Assert.Empty(await Ids(sink, "scope-a"));
+        Assert.Equal(new[] { id }, await Ids(sink, "scope-b"));
+        await AssertClean(w, sink, "scope-b");
+    }
+
+    [SkippableFact]
+    public async Task A_revision_that_drops_a_shared_paragraph_leaves_the_other_scope()
+    {
+        var w = NewWorker();
+        var sink = new RecordingSink();
+        var kept = Para(1);
+        var shared = Para(2);
+        await w.Tracker.ReviseAsync(One, "scope-a", Doc(kept, shared), w.Embedder, sink);
+        await w.Tracker.ReviseAsync(One, "scope-b", Doc(kept, shared), w.Embedder, sink);
+
+        var revised = await w.Tracker.ReviseAsync(One, "scope-a", Doc(kept), w.Embedder, sink);
+
+        Assert.Equal(1, revised.Deleted);
+        Assert.Equal(new[] { IdOf(w, kept) }, await Ids(sink, "scope-a"));
+        Assert.Equal(new[] { IdOf(w, kept), IdOf(w, shared) }.OrderBy(x => x, StringComparer.Ordinal), await Ids(sink, "scope-b"));
+        await AssertClean(w, sink, "scope-a");
+        await AssertClean(w, sink, "scope-b");
+    }
+
     // ---- verify ----
 
     [SkippableFact]
@@ -803,7 +864,7 @@ public abstract partial class RevisionTrackerContract : IDisposable
         {
             new EmbeddedChunk(new ChunkId("stray"), One, 1, "text", new float[] { 1, 1 }, "m", Scope),
         });
-        await sink.DeleteAsync(new[] { new ChunkId(IdOf(w, Para(2))) });
+        await sink.DeleteAsync(Scope, new[] { new ChunkId(IdOf(w, Para(2))) });
 
         var report = await w.Tracker.VerifyAsync(Scope, sink);
 

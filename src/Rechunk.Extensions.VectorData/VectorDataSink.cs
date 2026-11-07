@@ -17,7 +17,7 @@ public sealed class VectorDataMapping<TKey, TRecord>
 
     /// <summary>
     /// The key of the record for a scope and a chunk id. Chunk ids come from the text, so the same text in two scopes has
-    /// the same id. Put the scope in the key (for example scope + ":" + id) and a delete in one scope never touches another.
+    /// the same id. Use ScopedKey, or your own key that includes the scope, so a delete in one scope never touches another.
     /// </summary>
     public required Func<string, ChunkId, TKey> ToKey { get; init; }
 
@@ -29,8 +29,8 @@ public sealed class VectorDataMapping<TKey, TRecord>
 
     public Func<TRecord, ChunkId>? ToId { get; init; }
 
-    /// <summary>The scope used by the delete that does not name one.</summary>
-    public string DefaultScope { get; init; } = "default";
+    /// <summary>A string key of the scope, a colon and the chunk id. Two scopes never share a record.</summary>
+    public static string ScopedKey(string scope, ChunkId id) => scope + ":" + id.Value;
 }
 
 /// <summary>
@@ -57,6 +57,14 @@ public sealed class VectorDataSink<TKey, TRecord> : IVectorSink
     {
         _collection = collection ?? throw new ArgumentNullException(nameof(collection));
         _mapping = mapping ?? throw new ArgumentNullException(nameof(mapping));
+        var sample = new ChunkId("x");
+        if (EqualityComparer<TKey>.Default.Equals(_mapping.ToKey("a", sample), _mapping.ToKey("b", sample)))
+        {
+            throw new ArgumentException(
+                "The key must include the scope. ToKey gave one key for two different scopes, so a delete in one scope would remove the other scope's vector.",
+                nameof(mapping));
+        }
+
         ArgumentOutOfRangeException.ThrowIfLessThan(batchSize, 1);
         ArgumentOutOfRangeException.ThrowIfLessThan(attempts, 1);
         _batchSize = batchSize;
@@ -73,9 +81,6 @@ public sealed class VectorDataSink<TKey, TRecord> : IVectorSink
             await WithRetryAsync(token => new ValueTask(_collection.UpsertAsync(records, token)), ct).ConfigureAwait(false);
         }
     }
-
-    public ValueTask DeleteAsync(IReadOnlyList<ChunkId> ids, CancellationToken ct = default) =>
-        DeleteAsync(_mapping.DefaultScope, ids, ct);
 
     public async ValueTask DeleteAsync(string scope, IReadOnlyList<ChunkId> ids, CancellationToken ct = default)
     {

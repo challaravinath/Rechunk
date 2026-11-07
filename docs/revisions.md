@@ -99,7 +99,7 @@ With `ReuseForSmallEdits`, a small edit can be matched as a near duplicate of th
 ```csharp
 var sink = new VectorDataSink<string, Doc>(collection, new VectorDataMapping<string, Doc>
 {
-    ToKey = (scope, id) => scope + ":" + id.Value,
+    ToKey = VectorDataMapping<string, Doc>.ScopedKey,
     ToRecord = c => new Doc(c.Scope + ":" + c.Id.Value, c.Scope, c.Id.Value, c.Text, c.Vector),
     ScopeFilter = scope => d => d.Scope == scope,   // only needed for VerifyAsync
     ToId = d => new ChunkId(d.ChunkId),             // only needed for VerifyAsync
@@ -108,7 +108,7 @@ var sink = new VectorDataSink<string, Doc>(collection, new VectorDataMapping<str
 
 Writes and deletes go in batches (100 by default) and a batch that fails is tried again as a whole (3 tries by default). That is safe because an upsert with a fixed key replaces the record, and deleting a key that is not there is ignored.
 
-Chunk ids come from the text, so the same text in two scopes has the same id. Put the scope in your key, as above, or a delete in one scope will remove the vector for the other one too.
+Chunk ids come from the text, so the same text in two scopes has the same id. `ScopedKey` puts the scope in a string key. The sink refuses a `ToKey` that leaves the scope out. If your vectors are already stored under the bare chunk id, give them a new key or ingest them again.
 
 ## Backends
 
@@ -119,4 +119,4 @@ All three revision stores (in memory, SQLite, Redis) run the same contract tests
 - Only documents you send through the tracker are tracked. Chunks that were ingested with `ChunkIngestor` on its own have no references, so a delete of a document does not know about them. `VerifyAsync` shows them as orphans.
 - A revision that is in progress looks like it has orphans to `VerifyAsync`. Run verify when the workers are quiet if you need a strict answer.
 - Erase by source needs the document to have been revised with a source, see [erasure.md](erasure.md).
-- Vectors are matched to documents by chunk id. The sink has to key records by scope and id, as above, if you use more than one scope.
+- Vectors are matched to documents by chunk id within a scope. Key records by scope and id. Rows stored under the bare chunk id need a new key or a fresh ingest.

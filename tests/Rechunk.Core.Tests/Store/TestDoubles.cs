@@ -38,13 +38,14 @@ public sealed class RecordingSink : IVectorSink
 
     public Action<IReadOnlyList<EmbeddedChunk>, int>? Hook { get; set; }
 
+    /// <summary>The chunk ids currently stored, from every scope.</summary>
     public IReadOnlyCollection<string> StoredIds
     {
         get
         {
             lock (_gate)
             {
-                return _stored.Keys.ToList();
+                return _stored.Values.Select(c => c.Id.Value).ToList();
             }
         }
     }
@@ -57,7 +58,7 @@ public sealed class RecordingSink : IVectorSink
         {
             foreach (var chunk in chunks)
             {
-                _stored[chunk.Id.Value] = chunk;
+                _stored[Key(chunk.Scope, chunk.Id)] = chunk;
             }
         }
 
@@ -69,7 +70,7 @@ public sealed class RecordingSink : IVectorSink
     /// <summary>Set by a test to make deletes fail.</summary>
     public Func<IReadOnlyList<ChunkId>, Exception?>? OnDelete { get; set; }
 
-    public ValueTask DeleteAsync(IReadOnlyList<ChunkId> ids, CancellationToken ct = default)
+    public ValueTask DeleteAsync(string scope, IReadOnlyList<ChunkId> ids, CancellationToken ct = default)
     {
         Interlocked.Increment(ref DeleteCalls);
         if (OnDelete?.Invoke(ids) is { } error)
@@ -81,7 +82,7 @@ public sealed class RecordingSink : IVectorSink
         {
             foreach (var id in ids)
             {
-                _stored.Remove(id.Value);
+                _stored.Remove(Key(scope, id));
             }
         }
 
@@ -92,18 +93,34 @@ public sealed class RecordingSink : IVectorSink
     {
         lock (_gate)
         {
-            return _stored.GetValueOrDefault(id);
+            foreach (var chunk in _stored.Values)
+            {
+                if (chunk.Id.Value == id)
+                {
+                    return chunk;
+                }
+            }
+
+            return null;
         }
     }
 
     public async IAsyncEnumerable<ChunkId> ListIdsAsync(string scope, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
     {
-        await Task.CompletedTask;
-        foreach (var id in StoredIds)
+        List<ChunkId> ids;
+        lock (_gate)
         {
-            yield return new ChunkId(id);
+            ids = _stored.Values.Where(c => c.Scope == scope).Select(c => c.Id).ToList();
+        }
+
+        await Task.CompletedTask;
+        foreach (var id in ids)
+        {
+            yield return id;
         }
     }
+
+    private static string Key(string? scope, ChunkId id) => (scope ?? "") + ":" + id.Value;
 }
 
 /// <summary>Wraps a store so a test can make single calls fail.</summary>
