@@ -89,8 +89,8 @@ public class VectorDataSinkTests
 
     private static VectorDataMapping<string, Doc> Mapping(bool listing = true) => new()
     {
-        ToKey = (scope, id) => scope + ":" + id.Value,
-        ToRecord = c => new Doc((c.Scope ?? "default") + ":" + c.Id.Value, c.Scope ?? "default", c.Id.Value, c.Text),
+        ToKey = VectorDataMapping<string, Doc>.ScopedKey,
+        ToRecord = c => new Doc(VectorDataMapping<string, Doc>.ScopedKey(c.Scope ?? "default", c.Id), c.Scope ?? "default", c.Id.Value, c.Text),
         ScopeFilter = listing ? scope => d => d.Scope == scope : null,
         ToId = listing ? d => new ChunkId(d.Id) : null,
     };
@@ -148,21 +148,17 @@ public class VectorDataSinkTests
     }
 
     [Fact]
-    public async Task A_delete_without_a_scope_uses_the_default_scope_of_the_mapping()
+    public void A_key_without_the_scope_is_refused()
     {
-        var collection = new FakeCollection();
         var mapping = new VectorDataMapping<string, Doc>
         {
-            ToKey = Mapping().ToKey,
-            ToRecord = Mapping().ToRecord,
-            DefaultScope = "docs",
+            ToKey = (_, id) => id.Value,
+            ToRecord = c => new Doc(c.Id.Value, c.Scope ?? "", c.Id.Value, c.Text),
         };
-        var sink = Sink(collection, mapping: mapping);
-        await sink.UpsertAsync(new[] { Chunk("a", "docs"), Chunk("a", "other") });
 
-        await sink.DeleteAsync(new[] { new ChunkId("a") });
+        var error = Assert.Throws<ArgumentException>(() => new VectorDataSink<string, Doc>(new FakeCollection(), mapping));
 
-        Assert.Equal(new[] { "other:a" }, collection.Rows.Keys);
+        Assert.Contains("scope", error.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -122,17 +122,17 @@ internal static class RevisionDemo
         {
             foreach (var chunk in chunks)
             {
-                _rows[chunk.Id.Value] = chunk;
+                _rows[Key(chunk.Scope, chunk.Id)] = chunk;
             }
 
             return ValueTask.CompletedTask;
         }
 
-        public ValueTask DeleteAsync(IReadOnlyList<ChunkId> ids, CancellationToken ct = default)
+        public ValueTask DeleteAsync(string scope, IReadOnlyList<ChunkId> ids, CancellationToken ct = default)
         {
             foreach (var id in ids)
             {
-                _rows.Remove(id.Value);
+                _rows.Remove(Key(scope, id));
             }
 
             return ValueTask.CompletedTask;
@@ -141,10 +141,12 @@ internal static class RevisionDemo
         public async IAsyncEnumerable<ChunkId> ListIdsAsync(string scope, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken ct = default)
         {
             await Task.CompletedTask;
-            foreach (var key in _rows.Keys.ToList())
+            foreach (var chunk in _rows.Values.Where(c => c.Scope == scope).ToList())
             {
-                yield return new ChunkId(key);
+                yield return chunk.Id;
             }
         }
+
+        private static string Key(string? scope, ChunkId id) => (scope ?? "") + ":" + id.Value;
     }
 }

@@ -55,16 +55,12 @@ public interface IVectorSink
 {
     ValueTask UpsertAsync(IReadOnlyList<EmbeddedChunk> chunks, CancellationToken ct = default);
 
-    ValueTask DeleteAsync(IReadOnlyList<ChunkId> ids, CancellationToken ct = default);
-
     /// <summary>
-    /// Deletes by scope and id. Revision tracking calls this one. A chunk id comes from the text, so the same text in two
-    /// scopes has the same id: if your records are keyed by id alone, a delete here removes the vector for every scope.
-    /// Key your records by scope and id (EmbeddedChunk carries the scope) and override this method to avoid that.
-    /// The default just calls the method above, so existing sinks keep working. Deleting an id that is not there
-    /// must not fail, because a delete can be repeated.
+    /// Deletes the vectors for these chunk ids in this scope. A chunk id comes from the text, so the same text in two
+    /// scopes has the same id. Key your records by scope and id (EmbeddedChunk carries the scope). Deleting an id that
+    /// is not there must not fail, because a delete can be repeated.
     /// </summary>
-    ValueTask DeleteAsync(string scope, IReadOnlyList<ChunkId> ids, CancellationToken ct = default) => DeleteAsync(ids, ct);
+    ValueTask DeleteAsync(string scope, IReadOnlyList<ChunkId> ids, CancellationToken ct = default);
 
     IAsyncEnumerable<ChunkId> ListIdsAsync(string scope, CancellationToken ct = default);
 }

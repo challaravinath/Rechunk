@@ -74,6 +74,6 @@ If the erase fails half way, for example because the vector store is down, it wr
 - It does not touch your source documents, your chunker's output or your embedding provider.
 - It does not remove the chunk id from the audit log. The id is a hash of the text. Events keep the document, time and kind. Remove audit events through your audit store if your rules require it.
 - It cannot find a vector that is in the sink but unknown to everything else. `VerifyAsync` lists those, and `EraseChunksAsync` can delete them by id.
-- Vector ids are global in a vector sink and are not split by scope. Two scopes with the same text share the same chunk id in the sink, so erasing in one scope deletes the vector for both. Use one sink per tenant if that matters.
+- A vector is keyed by scope and chunk id. A custom sink has to implement the scoped delete. Vectors stored under the bare chunk id need a new key or a fresh ingest, or an erase will not find them.
 - On Redis, data written before this version has no source and chunk indexes. Those documents are found by source or by chunk after their next revision. Erase them by document until then. On SQLite the index is added on first use, and old documents have no source.
 - It is not legal advice. It removes what Rechunk stored. Whether that meets your obligations is for you and your lawyer.
