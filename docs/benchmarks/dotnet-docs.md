@@ -1,0 +1,127 @@
+# Dedup on a sample of dotnet/docs
+
+One run of the real data harness on public markdown from [dotnet/docs](https://github.com/dotnet/docs). The clone is not in this repo.
+
+## Data
+
+| | |
+| --- | --- |
+| repo | https://github.com/dotnet/docs |
+| commit | `82937f4b2a89a5a160719ada30fe4cdab947907a` |
+| commit date | 2026-11-06 |
+| files | `docs/**/*.md`, 13555 files on disk, 2500 used |
+| sample | seed 2026, the shuffle in `benchmarks/Rechunk.RealData` |
+
+The harness lists the markdown files, shuffles them with a fixed generator (seed 2026), keeps 2500, then sorts those paths so the chunk order is stable. Includes are not expanded. Each file is split on blank lines into paragraphs. A fenced code block stays one chunk. A heading with text on the next line and no blank line between them stays one chunk. A YAML block at the top of a file, and HTML comments, are dropped.
+
+The pipeline is the normal one: exact hash, then SimHash, then MinHash. MinHash confirms a SimHash hit. The number and negation guard is on. Language detection is off, and every chunk is in one scope.
+
+## Machine
+
+| | |
+| --- | --- |
+| OS | Ubuntu 24.04.5 LTS |
+| CPU | 4 vCPU, Intel Xeon (KVM), family 6 model 207 |
+| RAM | 15 GiB |
+| SDK | .NET SDK 8.0.427 |
+| build | `dotnet run -c Release` |
+
+Times are one pass of `DeduplicateAsync` over the chunks already in memory. The first setting in the sweep was slower than the later ones. A fresh process that ran only the default setting took 1790 ms (30215 chunks per second) and produced the same counts.
+
+## Counts
+
+54085 chunks.
+
+SimHash distance, with MinHash held at 0.85:
+
+| simhash | minhash | exact | simhash | minhash | saved | saved % | left to embed | ms | chunks/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | 0.85 | 11610 | 108 | 155 | 11873 | 22.0% | 42212 | 1860 | 29078 |
+| 3 | 0.85 | 11610 | 117 | 146 | 11873 | 22.0% | 42212 | 1310 | 41286 |
+| 4 | 0.85 | 11610 | 139 | 125 | 11874 | 22.0% | 42211 | 1196 | 45222 |
+
+MinHash threshold, with SimHash held at 3:
+
+| simhash | minhash | exact | simhash | minhash | saved | saved % | left to embed | ms | chunks/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 3 | 0.80 | 11610 | 123 | 321 | 12054 | 22.3% | 42031 | 1210 | 44698 |
+| 3 | 0.85 | 11610 | 117 | 146 | 11873 | 22.0% | 42212 | 1310 | 41286 |
+| 3 | 0.90 | 11610 | 99 | 48 | 11757 | 21.7% | 42328 | 1254 | 43130 |
+
+"Left to embed" is chunks minus saved. On the default setting the harness also counted 42212 unique chunks, which matches.
+
+Almost all of the saving is the exact stage. 8581 of the 11610 exact hits are shorter than 40 characters. The texts that came up most often, counted as extra copies after the first one:
+
+| copies skipped | text |
+| --- | --- |
+| 1636 | `## See also` |
+| 567 | `## Syntax` |
+| 480 | `## Requirements` |
+| 396 | `## Remarks` |
+| 323 | `## To correct this error` |
+| 320 | `## Parameters` |
+| 245 | `## Example` |
+| 213 | `**Library:** CorGuids.lib` |
+
+Repeated headings are real chunks with this splitter, and skipping them is the right call. They do not say much about the near duplicate thresholds. At the default, SimHash and MinHash together skipped 263 chunks (117 + 146) out of 54085.
+
+## Near duplicate pairs
+
+I took a random 10 of the 263 near duplicate pairs at the default (pair seed 2026) and a random 10 at MinHash 0.80, which is the setting that skipped the most. I called a pair a true duplicate when the second chunk does not add a distinct fact, name, or code sample. A different API, event, snippet id, config location, or a different instruction is a wrong merge.
+
+Default, SimHash 3 and MinHash 0.85. 4 of 10 true, so about 40% on this sample.
+
+| | stage | bits | jaccard | judgment | what I saw |
+| --- | --- | --- | --- | --- | --- |
+| 1 | MinHash | | 0.906 | true duplicate | same hosting HRESULT table |
+| 2 | SimHash | 2 | 0.938 | true duplicate | same hosting HRESULT table |
+| 3 | SimHash | 3 | 0.852 | wrong merge | code include, different snippet id |
+| 4 | MinHash | | 0.867 | wrong merge | code include, different snippet id |
+| 5 | MinHash | | 0.883 | true duplicate | same bullet, different capitalization |
+| 6 | SimHash | 0 | 0.859 | wrong merge | config path ends at `security` or continues to `transport` |
+| 7 | MinHash | | 0.898 | true duplicate | same paragraph, the relative link differs |
+| 8 | MinHash | | 0.922 | wrong merge | same analyzer note, only one says it is safe to suppress |
+| 9 | MinHash | | 0.930 | wrong merge | code include, different snippet id |
+| 10 | SimHash | 0 | 1.000 | wrong merge | editorconfig category `Style` vs `style` |
+
+MinHash 0.80, SimHash 3. 6 of 10 true, so about 60% on this sample.
+
+| | stage | bits | jaccard | judgment | what I saw |
+| --- | --- | --- | --- | --- | --- |
+| 1 | MinHash | | 0.945 | true duplicate | "Some of the messages" vs "Some messages" |
+| 2 | SimHash | 0 | 1.000 | true duplicate | same sentence, bullet vs bold |
+| 3 | MinHash | | 0.859 | wrong merge | code include, different snippet id |
+| 4 | MinHash | | 0.836 | wrong merge | Prepared message vs Replay message |
+| 5 | MinHash | | 0.898 | wrong merge | Menu control vs MenuItem control |
+| 6 | SimHash | 0 | 1.000 | true duplicate | same certificate note, markup differs |
+| 7 | SimHash | 0 | 1.000 | true duplicate | same parameter line, `Boolean` markup differs |
+| 8 | SimHash | 0 | 1.000 | true duplicate | same footnote sentence, the marker differs |
+| 9 | MinHash | | 0.867 | true duplicate | "For information" vs "For more information" |
+| 10 | MinHash | | 0.867 | wrong merge | F# sample, one block includes `end` |
+
+Ten pairs is a small sample. Several of the wrong merges are short code includes and config lines. They sit near the threshold because they share a long common prefix and differ in an id. A SimHash distance of 0 with a Jaccard estimate of 1.000 still showed up on a pair whose only difference was the case of `Style`, so a higher threshold would not have split that pair.
+
+## Thresholds
+
+I left the defaults at SimHash distance 3 and MinHash 0.85.
+
+Distance 2 and distance 4 skipped the same number of chunks as distance 3, apart from one extra chunk at distance 4. MinHash has to confirm the SimHash hit, so on this sample the distance barely moves the result. MinHash 0.80 skipped 181 more chunks (22.3% instead of 22.0%). Those extra pairs include template sentences that name a different event. MinHash 0.90 skipped 116 fewer. Neither change is big enough, or clean enough, to retune the library default from one sample of this repo.
+
+## Reproduce
+
+```
+git clone --depth 1 https://github.com/dotnet/docs.git
+git -C dotnet-docs fetch --depth 1 origin 82937f4b2a89a5a160719ada30fe4cdab947907a
+git -C dotnet-docs checkout 82937f4b2a89a5a160719ada30fe4cdab947907a
+
+dotnet run -c Release --project benchmarks/Rechunk.RealData -- dotnet-docs/docs --sample 2500 --seed 2026 --sweep
+```
+
+The pair lists:
+
+```
+dotnet run -c Release --project benchmarks/Rechunk.RealData -- dotnet-docs/docs --sample 2500 --seed 2026 --pairs 10 --pairs-seed 2026
+dotnet run -c Release --project benchmarks/Rechunk.RealData -- dotnet-docs/docs --sample 2500 --seed 2026 --simhash 3 --minhash 0.80 --pairs 10 --pairs-seed 2026
+```
+
+Any other folder of markdown works the same way. Pass the folder, and `--sample` when you do not want every file.
