@@ -48,6 +48,24 @@ public sealed class RechunkPipelineBuilder
         return this;
     }
 
+    public RechunkPipelineBuilder NearDuplicateMinTokens(int minTokens)
+    {
+        _options.NearDuplicateMinTokens = minTokens;
+        return this;
+    }
+
+    public RechunkPipelineBuilder SkipCodeLikeChunks(bool enabled = true)
+    {
+        _options.SkipCodeLikeChunks = enabled;
+        return this;
+    }
+
+    public RechunkPipelineBuilder GuardIdentifierOnlyChanges(bool enabled = true)
+    {
+        _options.GuardIdentifierOnlyChanges = enabled;
+        return this;
+    }
+
     public RechunkPipelineBuilder UseDefaultScope(string scope)
     {
         _options.DefaultScope = scope;

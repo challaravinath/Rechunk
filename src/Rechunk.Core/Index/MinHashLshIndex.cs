@@ -82,13 +82,19 @@ public sealed class MinHashLshIndex : IMinHashIndex
     }
 
     /// <summary>Adds a chunk. Adding an id that is already there replaces the old entry.</summary>
-    public void Add(ChunkId id, string scope, ReadOnlySpan<uint> signature, ulong guardSignature = 0)
+    public void Add(
+        ChunkId id,
+        string scope,
+        ReadOnlySpan<uint> signature,
+        ulong guardSignature = 0,
+        ulong contentSignature = 0,
+        ulong identifierSignature = 0)
     {
         ArgumentNullException.ThrowIfNull(scope);
         CheckLength(signature);
 
         var shard = _shards.GetOrAdd(scope, _ => new Shard(Bands));
-        var entry = new Entry(id, signature.ToArray(), guardSignature);
+        var entry = new Entry(id, signature.ToArray(), guardSignature, contentSignature, identifierSignature);
 
         lock (shard.Gate)
         {
@@ -169,7 +175,14 @@ public sealed class MinHashLshIndex : IMinHashIndex
                     var jaccard = MinHasher.EstimateJaccard(signature, entry.Signature);
                     if (jaccard >= Threshold)
                     {
-                        found.Add(new NearDuplicateMatch(entry.Id, MatchStage.MinHash, null, jaccard, entry.GuardSignature));
+                        found.Add(new NearDuplicateMatch(
+                            entry.Id,
+                            MatchStage.MinHash,
+                            null,
+                            jaccard,
+                            entry.GuardSignature,
+                            entry.ContentSignature,
+                            entry.IdentifierSignature));
                     }
                 }
             }
@@ -211,7 +224,13 @@ public sealed class MinHashLshIndex : IMinHashIndex
     public ValueTask AddAsync(ChunkId id, string scope, ChunkFingerprint fingerprint, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        Add(id, scope, fingerprint.MinHash.Span, fingerprint.GuardSignature);
+        Add(
+            id,
+            scope,
+            fingerprint.MinHash.Span,
+            fingerprint.GuardSignature,
+            fingerprint.ContentSignature,
+            fingerprint.IdentifierSignature);
         return ValueTask.CompletedTask;
     }
 
@@ -270,7 +289,8 @@ public sealed class MinHashLshIndex : IMinHashIndex
         }
     }
 
-    private sealed record Entry(ChunkId Id, uint[] Signature, ulong GuardSignature);
+    private sealed record Entry(
+        ChunkId Id, uint[] Signature, ulong GuardSignature, ulong ContentSignature, ulong IdentifierSignature);
 
     private sealed class Shard
     {

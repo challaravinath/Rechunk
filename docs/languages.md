@@ -65,7 +65,7 @@ Options:
 | --- | --- | --- |
 | `Language.CharacterShingles` | true | Cut runs of unspaced scripts into characters. Turn it off to get the old behavior. |
 | `Language.CharShingleSize` | 3 | Characters per shingle. 2 or 3 works for Chinese and Japanese. |
-| `Language.CharsPerWord` | 3 | How many characters count as one word for `MinWords`. A Chinese chunk needs `MinWords` times this many characters before SimHash and MinHash look at it. |
+| `Language.CharsPerWord` | 3 | How many characters count as one word for `MinWords`. A Chinese chunk also has to reach `NearDuplicateMinTokens`, and each character counts as one token there. |
 | `Language.PrimarySubtagOnly` | true | Cut tags down to the primary language. |
 
 The false merge guard knows Chinese and Japanese numerals (一, 二, 十, 百, 万 and so on) and a few common negations (不, 没, 无, 非, 未), so "三十天" and "六十天" are kept apart like "30 days" and "60 days".

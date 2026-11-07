@@ -34,6 +34,26 @@ public sealed class RechunkOptions
     /// <summary>Do not merge chunks that only differ in numbers, dates or a "not".</summary>
     public bool GuardNumbersAndNegations { get; set; } = true;
 
+    /// <summary>
+    /// SimHash and MinHash skip a chunk with fewer tokens than this. The exact stage still runs.
+    /// 20 is from the dotnet/docs sample: near pairs under 20 tokens were one line headings,
+    /// boilerplate and short parameter lines, and one different word there was often a different fact.
+    /// A token is a word from the tokenizer. In Chinese, Japanese or Thai each character is a token.
+    /// </summary>
+    public int NearDuplicateMinTokens { get; set; } = 20;
+
+    /// <summary>
+    /// SimHash and MinHash skip a chunk that is mostly code, an include directive, or the same kind of markup.
+    /// The exact stage still runs. On by default, because those chunks share a long prefix and differ in an id.
+    /// </summary>
+    public bool SkipCodeLikeChunks { get; set; } = true;
+
+    /// <summary>
+    /// Do not merge a near duplicate pair when the only tokens that differ look like identifiers:
+    /// CamelCase, a dotted name, an acronym, a snippet id, or a capitalized word that is not the start of a sentence.
+    /// </summary>
+    public bool GuardIdentifierOnlyChanges { get; set; } = true;
+
     /// <summary>Report what would happen but do not remember anything.</summary>
     public bool DryRun { get; set; }
 
@@ -42,6 +62,11 @@ public sealed class RechunkOptions
         if (string.IsNullOrWhiteSpace(DefaultScope))
         {
             throw new ArgumentException("DefaultScope can not be empty.", nameof(DefaultScope));
+        }
+
+        if (NearDuplicateMinTokens < 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(NearDuplicateMinTokens), "NearDuplicateMinTokens has to be at least 1.");
         }
 
         if (SimHash.MaxHammingDistance is < 0 or > 63)

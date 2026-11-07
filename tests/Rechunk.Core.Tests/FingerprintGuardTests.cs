@@ -10,8 +10,10 @@ public class FingerprintGuardTests
         return new ChunkFingerprinter(options);
     }
 
-    private const string Policy30 = "Employees must give a notice period of 30 days before leaving the company and returning all equipment.";
-    private const string Policy60 = "Employees must give a notice period of 60 days before leaving the company and returning all equipment.";
+    private const string Pad = " The rest of the handbook explains how the rule is applied and who to ask.";
+
+    private const string Policy30 = "Employees must give a notice period of 30 days before leaving the company and returning all equipment." + Pad;
+    private const string Policy60 = "Employees must give a notice period of 60 days before leaving the company and returning all equipment." + Pad;
 
     [Fact]
     public void A_different_number_gives_a_different_guard_signature()
@@ -26,8 +28,8 @@ public class FingerprintGuardTests
     {
         var f = Fingerprinter();
 
-        var allowed = f.Compute("Employees are allowed to work from home on Fridays with approval from their manager.");
-        var forbidden = f.Compute("Employees are not allowed to work from home on Fridays with approval from their manager.");
+        var allowed = f.Compute("Employees are allowed to work from home on Fridays with approval from their manager." + Pad);
+        var forbidden = f.Compute("Employees are not allowed to work from home on Fridays with approval from their manager." + Pad);
 
         Assert.NotEqual(allowed.GuardSignature, forbidden.GuardSignature);
     }
@@ -37,9 +39,9 @@ public class FingerprintGuardTests
     {
         var f = Fingerprinter();
 
-        var plain = f.Compute("We ship to every country in the world and we change addresses at any time.");
-        var spelled = f.Compute("We ship to every country in the world and we don't change addresses at any time.");
-        var typed = f.Compute("We ship to every country in the world and we dont change addresses at any time.");
+        var plain = f.Compute("We ship to every country in the world and we change addresses at any time." + Pad);
+        var spelled = f.Compute("We ship to every country in the world and we don't change addresses at any time." + Pad);
+        var typed = f.Compute("We ship to every country in the world and we dont change addresses at any time." + Pad);
 
         Assert.NotEqual(plain.GuardSignature, spelled.GuardSignature);
         Assert.Equal(spelled.GuardSignature, typed.GuardSignature);
@@ -50,8 +52,8 @@ public class FingerprintGuardTests
     {
         var f = Fingerprinter();
 
-        var a = f.Compute("Employees must give notice of 30 days before leaving the company and returning equipment.");
-        var b = f.Compute("Staff should give notice of 30 days before departing the firm and handing back equipment.");
+        var a = f.Compute("Employees must give notice of 30 days before leaving the company and returning equipment." + Pad);
+        var b = f.Compute("Staff should give notice of 30 days before departing the firm and handing back equipment." + Pad);
 
         Assert.Equal(a.GuardSignature, b.GuardSignature);
     }
@@ -68,7 +70,7 @@ public class FingerprintGuardTests
         var f = Fingerprinter(minWords: 8);
 
         Assert.False(f.Compute("only five words in here").HasSimHash);
-        Assert.True(f.Compute("this one has quite a few more words than the limit").HasSimHash);
+        Assert.True(f.Compute("this paragraph has quite a few more words than the old limit and it is long enough for both checks now").HasSimHash);
     }
 
     [Fact]

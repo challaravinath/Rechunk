@@ -50,6 +50,20 @@ public sealed class ChunkFingerprinter : IChunkFingerprinter
                 version += $"+{FalseMergeGuard.Version}";
             }
 
+            if (_options.SimHash.Enabled || _options.MinHash.Enabled)
+            {
+                version += $"+near-t{_options.NearDuplicateMinTokens}";
+                if (_options.SkipCodeLikeChunks)
+                {
+                    version += $"+{CodeLikeText.Version}";
+                }
+
+                if (_options.GuardIdentifierOnlyChanges)
+                {
+                    version += $"+{IdentifierGuard.Version}";
+                }
+            }
+
             return version;
         }
     }
@@ -61,14 +75,23 @@ public sealed class ChunkFingerprinter : IChunkFingerprinter
 
         ulong simHash = 0;
         ulong guard = 0;
+        ulong content = 0;
+        ulong identifiers = 0;
         ReadOnlyMemory<uint> minHash = default;
 
-        if (_options.SimHash.Enabled || _options.MinHash.Enabled)
+        var nearStage = _options.SimHash.Enabled || _options.MinHash.Enabled;
+        if (nearStage && _options.SkipCodeLikeChunks && CodeLikeText.IsMostlyCodeOrMarkup(text))
+        {
+            return new ChunkFingerprint(exact, 0, default, 0);
+        }
+
+        if (nearStage)
         {
             var tokens = WordTokenizer.Tokenize(normalized, _options.Language.CharacterShingles);
             var units = Shingler.Units(tokens, _options.Language.CharsPerWord);
-            var simHashOn = _options.SimHash.Enabled && units >= _options.SimHash.MinWords;
-            var minHashOn = _options.MinHash.Enabled && units >= _options.MinHash.MinWords;
+            var eligible = tokens.Count >= _options.NearDuplicateMinTokens;
+            var simHashOn = _options.SimHash.Enabled && eligible && units >= _options.SimHash.MinWords;
+            var minHashOn = _options.MinHash.Enabled && eligible && units >= _options.MinHash.MinWords;
 
             if (simHashOn)
             {
@@ -80,13 +103,21 @@ public sealed class ChunkFingerprinter : IChunkFingerprinter
                 minHash = _minHasher.Compute(tokens);
             }
 
-            // the guard only matters for chunks that a near duplicate stage will look at
-            if ((simHashOn || minHashOn) && _options.GuardNumbersAndNegations)
+            // the guards only matter for chunks that a near duplicate stage will look at
+            if (simHashOn || minHashOn)
             {
-                guard = FalseMergeGuard.Signature(tokens);
+                if (_options.GuardNumbersAndNegations)
+                {
+                    guard = FalseMergeGuard.Signature(tokens);
+                }
+
+                if (_options.GuardIdentifierOnlyChanges)
+                {
+                    IdentifierGuard.Signatures(tokens, out content, out identifiers);
+                }
             }
         }
 
-        return new ChunkFingerprint(exact, simHash, minHash, guard);
+        return new ChunkFingerprint(exact, simHash, minHash, guard, content, identifiers);
     }
 }

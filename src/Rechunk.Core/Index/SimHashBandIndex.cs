@@ -54,11 +54,17 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
     }
 
     /// <summary>Adds a chunk. Adding an id that is already there replaces the old entry.</summary>
-    public void Add(ChunkId id, string scope, ulong simHash, ulong guardSignature = 0)
+    public void Add(
+        ChunkId id,
+        string scope,
+        ulong simHash,
+        ulong guardSignature = 0,
+        ulong contentSignature = 0,
+        ulong identifierSignature = 0)
     {
         ArgumentNullException.ThrowIfNull(scope);
         var shard = _shards.GetOrAdd(scope, _ => new Shard(_bandCount));
-        var entry = new Entry(id, simHash, guardSignature);
+        var entry = new Entry(id, simHash, guardSignature, contentSignature, identifierSignature);
 
         lock (shard.Gate)
         {
@@ -132,7 +138,13 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
                     if (distance <= MaxHammingDistance && !found.ContainsKey(entry.Id))
                     {
                         found[entry.Id] = new NearDuplicateMatch(
-                            entry.Id, MatchStage.SimHash, distance, null, entry.GuardSignature);
+                            entry.Id,
+                            MatchStage.SimHash,
+                            distance,
+                            null,
+                            entry.GuardSignature,
+                            entry.ContentSignature,
+                            entry.IdentifierSignature);
                     }
                 }
             }
@@ -152,7 +164,7 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
     public ValueTask AddAsync(ChunkId id, string scope, ChunkFingerprint fingerprint, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        Add(id, scope, fingerprint.SimHash, fingerprint.GuardSignature);
+        Add(id, scope, fingerprint.SimHash, fingerprint.GuardSignature, fingerprint.ContentSignature, fingerprint.IdentifierSignature);
         return ValueTask.CompletedTask;
     }
 
@@ -197,7 +209,8 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
         }
     }
 
-    private readonly record struct Entry(ChunkId Id, ulong SimHash, ulong GuardSignature);
+    private readonly record struct Entry(
+        ChunkId Id, ulong SimHash, ulong GuardSignature, ulong ContentSignature, ulong IdentifierSignature);
 
     private sealed class Shard
     {
