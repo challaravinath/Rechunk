@@ -1,10 +1,17 @@
 # Rechunk
 
-Rechunk is a .NET library for RAG ingestion. It sits between your chunker and your embedding step and works out which chunks are new, which ones are repeats, and which old vectors should go when a document changes.
+Rechunk is a .NET library that sits between your chunker and your embedder and decides which chunks are new, which are repeats, and which old vectors to drop.
 
-## Why
+## Why Rechunk
 
-Every time a document is ingested again, most pipelines embed all of it again and often leave the old vectors behind. You pay for embeddings you already have, the same footer or disclaimer shows up in search results ten times, and an old version of a paragraph can still get quoted after it was changed. I want a small library that fixes this at chunk level and can also tell you later where a chunk came from and which embedding model made it.
+Chunkers split text. Vector stores store vectors. Neither checks a chunk before you pay to embed it, so most pipelines embed every chunk on every ingest, keep near copies as separate vectors, have no safe shared state for stateless workers, and leave PII, audit and erasure to the team.
+
+- A later ingest embeds only chunks whose text changed. A paragraph that moved keeps its vector. Chunks that no document still uses are deleted.
+- SHA-256 drops exact repeats. SimHash and MinHash, off until you enable them, drop boilerplate and small edits before the embedder. On 2500 files from dotnet/docs (commit `82937f4`, 54085 chunks) the defaults skipped 11675 (21.6%): 11610 exact, 21 SimHash, 44 MinHash, in 1136 ms (47610 chunks per second). 16 of 20 near pairs from that run were true duplicates. On the PAWS wiki test split (8000 pairs) the same defaults merged 34 true and 7 false, precision 82.9% and recall 1.0%.
+- SQLite or Redis holds the fingerprints for every worker. A chunk is claimed, then committed only after the vector write. A lease covers a dead worker. A chunk that keeps failing is a dead letter and can be replayed.
+- PII is scanned before fingerprinting and can be flagged, masked or blocked. The audit log records the decision and never the text or the secret. Erasure removes the vectors and the fingerprints and leaves a receipt of counts.
+
+How a chunk moves through that is in [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Status
 
@@ -32,6 +39,7 @@ What works today:
 What is still unfinished:
 
 - the Microsoft.Extensions.AI wrapper only forwards each call to the inner generator, so that package is not published
+- the Semantic Kernel helper registers Rechunk on the kernel and does nothing more yet
 - MMR reranking throws NotImplementedException
 
 ## Using the stages
@@ -162,6 +170,15 @@ On the PAWS wiki labeled final test split (8000 pairs) the same defaults merged 
 - MMR style diversity when retrieving
 - a benchmark on a public document set that checks embedding calls saved against answer quality
 - a Microsoft.Extensions.AI wrapper that skips text already embedded
+
+## Roadmap
+
+0.2 is planned and not built yet. The same list is in [ROADMAP.md](ROADMAP.md).
+
+- SQL Server and Azure SQL store package, with the same store interfaces as SQLite and Redis
+- Lease renewal while an embed runs longer than the claim
+- Safe handling when two workers see near duplicates of each other at the same time
+- NuGet trusted publishing. CI already packs with source link and symbols. The trusted publish step is not turned on, and nothing is on NuGet yet
 
 ## Packages
 
