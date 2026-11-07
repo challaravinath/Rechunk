@@ -7,8 +7,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <Deterministic>true</Deterministic>
+    <DebugType>portable</DebugType>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
-    <!-- missing XML docs are allowed for now, turn this back on before 0.1 -->
+    <!-- The XML file ships in the package. A public member with no comment is still allowed. -->
     <NoWarn>$(NoWarn);CS1591</NoWarn>
   </PropertyGroup>
 
@@ -17,25 +18,21 @@
     <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
   </PropertyGroup>
 
-  <!-- package metadata, source link and symbols -->
+  <!-- package metadata, source link and symbols. Each project sets its own PackageId and Description. -->
   <PropertyGroup>
-    <Version>0.1.0-preview.1</Version>
+    <Version>0.1.0</Version>
     <Authors>Challa Ravindranath</Authors>
     <Copyright>Copyright (c) 2026 Challa Ravindranath</Copyright>
+    <Description>Chunk deduplication for RAG pipelines in .NET.</Description>
     <RepositoryUrl>https://github.com/challaravinath/Rechunk</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageProjectUrl>https://github.com/challaravinath/Rechunk</PackageProjectUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageReadmeFile>README.md</PackageReadmeFile>
-    <PackageTags>rag;embeddings;deduplication;minhash;simhash;dotnet</PackageTags>
+    <PackageTags>rag;dedup;embeddings;simhash;minhash;lsh;semantic-kernel</PackageTags>
     <PublishRepositoryUrl>true</PublishRepositoryUrl>
     <EmbedUntrackedSources>true</EmbedUntrackedSources>
     <IncludeSymbols>true</IncludeSymbols>
     <SymbolPackageFormat>snupkg</SymbolPackageFormat>
   </PropertyGroup>
-
-  <ItemGroup Condition="'$(IsPackable)' != 'false'">
-    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
-  </ItemGroup>
 
 </Project>

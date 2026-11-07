@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <Description>Semantic Kernel helpers for Rechunk. Early work in progress.</Description>
+    <PackageId>Rechunk.SemanticKernel</PackageId>
+    <Description>Registers Rechunk on a Semantic Kernel builder.</Description>
   </PropertyGroup>
 
   <ItemGroup>

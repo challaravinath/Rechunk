@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
+    <!-- The wrapper still forwards every input, so it is not part of the 0.1.0 release. -->
+    <IsPackable>false</IsPackable>
     <Description>Embedding generator wrapper that skips text Rechunk has already seen. Early work in progress.</Description>
   </PropertyGroup>
 

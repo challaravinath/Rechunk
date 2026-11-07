@@ -4,7 +4,7 @@
     <AssemblyName>Rechunk</AssemblyName>
     <RootNamespace>Rechunk</RootNamespace>
     <PackageId>Rechunk</PackageId>
-    <Description>Dedup and revision-aware ingestion for RAG pipelines in .NET. Early work in progress.</Description>
+    <Description>Dedup and revision aware ingestion for RAG pipelines in .NET. Exact hash, SimHash and MinHash, plus revisions, audit and erasure.</Description>
     <IsAotCompatible>true</IsAotCompatible>
   </PropertyGroup>
 

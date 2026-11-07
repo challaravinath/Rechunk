@@ -6,6 +6,7 @@
 
   <ItemGroup>
     <!-- Core stays on the 8.x abstractions so .NET 8 apps are not forced up -->
+    <PackageVersion Include="Microsoft.SourceLink.GitHub" Version="8.0.0" />
     <PackageVersion Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.3" />
     <PackageVersion Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
 

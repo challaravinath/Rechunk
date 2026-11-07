@@ -8,7 +8,7 @@ Every time a document is ingested again, most pipelines embed all of it again an
 
 ## Status
 
-Early, work in progress. Nothing is published to NuGet yet and the API will change.
+Version 0.1.0 is the first set of packages. They are not on NuGet until a release tag is published, and the API can still change.
 
 What works today:
 
@@ -29,9 +29,10 @@ What works today:
 - a writer for any Microsoft.Extensions.VectorData collection, with batching, retries and the scoped delete that revisions use
 - the interfaces for the rest
 
-What is still stubs (they throw NotImplementedException with a TODO in the code):
+What is still unfinished:
 
-- the Microsoft.Extensions.AI wrapper and the Semantic Kernel helper (these are just project shells for now)
+- the Microsoft.Extensions.AI wrapper only forwards each call to the inner generator, so that package is not published
+- MMR reranking throws NotImplementedException
 
 ## Using the stages
 
@@ -160,18 +161,29 @@ On the PAWS wiki labeled final test split (8000 pairs) the same defaults merged 
 
 - MMR style diversity when retrieving
 - a benchmark on a public document set that checks embedding calls saved against answer quality
-- Microsoft.Extensions.AI and Semantic Kernel integration
+- a Microsoft.Extensions.AI wrapper that skips text already embedded
 
 ## Packages
 
 | Package | What it is |
 | --- | --- |
-| Rechunk | the core library (project folder is src/Rechunk.Core) |
+| Rechunk | the core library (project folder is src/Rechunk.Core, assembly name Rechunk) |
 | Rechunk.Storage.Sqlite | SQLite storage for the shared fingerprint store, dead letters and revisions |
 | Rechunk.Storage.Redis | Redis storage for the shared fingerprint store, dead letters and revisions |
-| Rechunk.Extensions.VectorData | writer and delete path for Microsoft.Extensions.VectorData collections |
-| Rechunk.Extensions.AI | wrapper for embedding generators |
-| Rechunk.SemanticKernel | Semantic Kernel helpers |
+| Rechunk.VectorData | writer and delete path for Microsoft.Extensions.VectorData collections (project folder is src/Rechunk.Extensions.VectorData) |
+| Rechunk.SemanticKernel | registers Rechunk on a Semantic Kernel builder |
+
+## Install
+
+```
+dotnet add package Rechunk
+dotnet add package Rechunk.Storage.Sqlite
+dotnet add package Rechunk.Storage.Redis
+dotnet add package Rechunk.VectorData
+dotnet add package Rechunk.SemanticKernel
+```
+
+Rechunk.Extensions.AI is not published in 0.1.0.
 
 ## Build
 
