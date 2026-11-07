@@ -5,6 +5,10 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: read
+  id-token: write
+
 jobs:
   publish:
     runs-on: ubuntu-latest
@@ -22,5 +26,11 @@ jobs:
       - name: Pack
         run: dotnet pack -c Release -o artifacts
 
+      - name: Log in to NuGet
+        id: login
+        uses: NuGet/login@v1
+        with:
+          user: challa
+
       - name: Push to NuGet
-        run: dotnet nuget push artifacts/*.nupkg --api-key ${{ secrets.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
+        run: dotnet nuget push artifacts/*.nupkg --api-key ${{ steps.login.outputs.NUGET_API_KEY }} --source https://api.nuget.org/v3/index.json --skip-duplicate
