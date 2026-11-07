@@ -16,7 +16,7 @@ Clear behavior when two workers see near copies of the same text at the same mom
 ### API documentation
 XML docs on the public API, so every type and method explains itself in IntelliSense.
 
-## 0.1.0 (2026-11-07)
+## 0.1.0 (2026-11-09)
 
 First NuGet release.
 
