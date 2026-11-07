@@ -55,7 +55,10 @@ services.AddRechunk(o =>
         o.Store.LeaseDuration = TimeSpan.FromMinutes(5);   // longer than your slowest embed plus write
         o.Failures.MaxAttempts = 3;
     })
-    .AddRedisStorage("localhost:6379");
+    .AddRedisStorage("localhost:6379");     // or .AddSqliteStorage("Data Source=rechunk.db")
+
+// in the worker, with the queue message id as the holder
+var result = await ingestor.IngestAsync(new IngestRequest(tenant, documentId, chunks, Holder: message.Id));
 ```
 
 `AddRedisStorage` and `AddSqliteStorage` replace the in memory store and dead letter store that `AddRechunk` registers. `UseInMemoryFingerprintStore()` gives you the store interface with the in memory data, which is what you want in tests and in a single process.
