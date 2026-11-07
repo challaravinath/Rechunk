@@ -16,6 +16,8 @@ The harness lists the markdown files, shuffles them with a fixed generator (seed
 
 The pipeline is the normal one: exact hash, then SimHash, then MinHash. MinHash confirms a SimHash hit. The number and negation guard is on. Language detection is off, and every chunk is in one scope.
 
+The tables under "Counts" and the first pair list are from before the short chunk, code, and identifier guards. The later sections are the same sample after those guards, with the defaults below. The SimHash distance and the MinHash threshold did not change.
+
 ## Machine
 
 | | |
@@ -101,11 +103,74 @@ MinHash 0.80, SimHash 3. 6 of 10 true, so about 60% on this sample.
 
 Ten pairs is a small sample. Several of the wrong merges are short code includes and config lines. They sit near the threshold because they share a long common prefix and differ in an id. A SimHash distance of 0 with a Jaccard estimate of 1.000 still showed up on a pair whose only difference was the case of `Style`, so a higher threshold would not have split that pair.
 
+## After the guards
+
+Three settings, all on by default:
+
+| option | default | what it does |
+| --- | --- | --- |
+| `NearDuplicateMinTokens` | 20 | SimHash and MinHash skip a chunk with fewer tokens than this. The exact stage still runs. |
+| `SkipCodeLikeChunks` | true | SimHash and MinHash skip a chunk that is mostly code, an include directive (`:::code`, `[!code`, `[!INCLUDE`), or markup of the same kind (a fenced sample, or a config breadcrumb full of backticks and `&nbsp;`). |
+| `GuardIdentifierOnlyChanges` | true | A near pair is not merged when the ordinary words match and the only tokens that differ look like identifiers: CamelCase, a dotted name, an acronym, a snippet id, or a capitalized word that is not the start of a sentence. |
+
+20 tokens is from this sample. Near pairs under 20 tokens were one line headings, boilerplate, and short parameter lines. In that range one substituted word (`context` and `thread`, `+=` and `-=`) changes the meaning, and the hash often cannot see an operator at all. The repeated HRESULT tables and the real paragraphs sit well above 20. Identical short lines still match at the exact stage.
+
+On the same 2500 files and the same commit, the default (SimHash 3, MinHash 0.85) is now 54085 chunks, 11675 skipped (21.6%): 11610 exact, 21 SimHash, 44 MinHash, 42410 left to embed. A fresh process that ran only that setting took 1557 ms (34737 chunks per second) and produced the same counts. The sweep below was one process, and the first row is slower than the later ones.
+
+SimHash distance, with MinHash held at 0.85:
+
+| simhash | minhash | exact | simhash | minhash | saved | saved % | left to embed | ms | chunks/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | 0.85 | 11610 | 16 | 49 | 11675 | 21.6% | 42410 | 1847 | 29283 |
+| 3 | 0.85 | 11610 | 21 | 44 | 11675 | 21.6% | 42410 | 1136 | 47610 |
+| 4 | 0.85 | 11610 | 30 | 35 | 11675 | 21.6% | 42410 | 1112 | 48638 |
+
+MinHash threshold, with SimHash held at 3:
+
+| simhash | minhash | exact | simhash | minhash | saved | saved % | left to embed | ms | chunks/s |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 3 | 0.80 | 11610 | 19 | 76 | 11705 | 21.6% | 42380 | 1075 | 50312 |
+| 3 | 0.85 | 11610 | 21 | 44 | 11675 | 21.6% | 42410 | 1136 | 47610 |
+| 3 | 0.90 | 11610 | 21 | 19 | 11650 | 21.5% | 42435 | 1079 | 50125 |
+
+Exact hits are unchanged (11610, and 8581 of them shorter than 40 characters). Near matches went from 263 to 65. The code includes, fenced samples, and config breadcrumbs that made up most of the old wrong merges are not in the 65.
+
+I took a random 20 of those 65 (pair seed 2026) and used the same rule as before. 16 of 20 true, so 80% on this sample. Before, 4 of 10 were true.
+
+| | stage | bits | jaccard | judgment | what I saw |
+| --- | --- | --- | --- | --- | --- |
+| 1 | SimHash | 2 | 0.938 | true duplicate | same hosting HRESULT table |
+| 2 | SimHash | 0 | 1.000 | true duplicate | same certificate note, the backticks differ |
+| 3 | MinHash | | 0.906 | true duplicate | same hosting HRESULT table |
+| 4 | MinHash | | 0.945 | true duplicate | same sentence, the note marker differs |
+| 5 | MinHash | | 0.953 | true duplicate | "service principal name (SPN)" vs "an SPN" |
+| 6 | MinHash | | 0.938 | true duplicate | same paragraph, the relative link differs |
+| 7 | SimHash | 3 | 0.953 | true duplicate | same configuration row, the table markup differs |
+| 8 | SimHash | 0 | 1.000 | true duplicate | same image sentence, the braces differ |
+| 9 | SimHash | 0 | 1.000 | true duplicate | same sentence, a comma differs |
+| 10 | MinHash | | 0.883 | wrong merge | menu controls vs slider controls |
+| 11 | MinHash | | 0.914 | true duplicate | same hosting HRESULT table |
+| 12 | SimHash | 0 | 1.000 | true duplicate | same sentence, `ETag` markup differs |
+| 13 | MinHash | | 0.914 | wrong merge | only one says to use administrator credentials |
+| 14 | MinHash | | 0.875 | wrong merge | singleton instance vs well-known instance |
+| 15 | MinHash | | 0.867 | wrong merge | "than the target" vs "than the source" |
+| 16 | SimHash | 0 | 1.000 | true duplicate | same sentence, the relative link differs |
+| 17 | SimHash | 0 | 1.000 | true duplicate | "validation-related" vs "validation related" |
+| 18 | MinHash | | 0.898 | true duplicate | same hosting HRESULT table |
+| 19 | SimHash | 3 | 0.961 | true duplicate | same hosting HRESULT table |
+| 20 | MinHash | | 0.859 | true duplicate | "binding" vs "binding configuration" |
+
+The four wrong merges are template sentences. "menu" and "slider" are ordinary words, so the identifier guard does not treat them as names. The other three add or swap a real word. None of the 20 is a code include or a config path.
+
+Embeds skipped fell from 11873 (22.0%) to 11675 (21.6%). The extra 198 chunks go to embedding. They are the short lines, the code and markup, and the pairs that only swap a name.
+
 ## Thresholds
 
 I left the defaults at SimHash distance 3 and MinHash 0.85.
 
-Distance 2 and distance 4 skipped the same number of chunks as distance 3, apart from one extra chunk at distance 4. MinHash has to confirm the SimHash hit, so on this sample the distance barely moves the result. MinHash 0.80 skipped 181 more chunks (22.3% instead of 22.0%). Those extra pairs include template sentences that name a different event. MinHash 0.90 skipped 116 fewer. Neither change is big enough, or clean enough, to retune the library default from one sample of this repo.
+On the first run, distance 2 and distance 4 skipped the same number of chunks as distance 3, apart from one extra chunk at distance 4. MinHash has to confirm the SimHash hit, so on this sample the distance barely moves the result. MinHash 0.80 skipped 181 more chunks (22.3% instead of 22.0%). Those extra pairs include template sentences that name a different event. MinHash 0.90 skipped 116 fewer.
+
+After the guards the distance still barely moves the result: 2, 3, and 4 all skip 11675. MinHash 0.80 skips 30 more than 0.85, and 0.90 skips 25 fewer. Neither change is big enough to retune the library default from one sample of this repo.
 
 ## Reproduce
 

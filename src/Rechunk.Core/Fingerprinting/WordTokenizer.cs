@@ -4,7 +4,13 @@ namespace Rechunk;
 /// One word of a chunk. Hash is the stable hash of the lower case word, and the two flags are what the
 /// false merge guard looks at.
 /// </summary>
-internal readonly record struct WordToken(ulong Hash, bool HasDigit, bool IsNegation, bool IsChar = false);
+internal readonly record struct WordToken(
+    ulong Hash,
+    bool HasDigit,
+    bool IsNegation,
+    bool IsChar = false,
+    bool IsIdentifier = false,
+    ulong IdentifierHash = 0);
 
 /// <summary>
 /// Splits normalized text into words. A word is a run of letters and digits. Everything else
@@ -33,6 +39,7 @@ internal static class WordTokenizer
         var word = new char[32];
         var length = 0;
         var hasDigit = false;
+        var wordStart = 0;
 
         for (var i = 0; i <= text.Length; i++)
         {
@@ -42,7 +49,7 @@ internal static class WordTokenizer
             {
                 if (length > 0)
                 {
-                    tokens.Add(Finish(word, length, hasDigit));
+                    tokens.Add(Finish(word, length, hasDigit, text, wordStart, i));
                     length = 0;
                     hasDigit = false;
                 }
@@ -62,6 +69,11 @@ internal static class WordTokenizer
 
             if (isWordChar)
             {
+                if (length == 0)
+                {
+                    wordStart = i;
+                }
+
                 if (length == word.Length)
                 {
                     Array.Resize(ref word, word.Length * 2);
@@ -72,7 +84,7 @@ internal static class WordTokenizer
             }
             else if (!isJoiner && length > 0)
             {
-                tokens.Add(Finish(word, length, hasDigit));
+                tokens.Add(Finish(word, length, hasDigit, text, wordStart, i));
                 length = 0;
                 hasDigit = false;
             }
@@ -81,11 +93,132 @@ internal static class WordTokenizer
         return tokens;
     }
 
-    private static WordToken Finish(char[] word, int length, bool hasDigit)
+    private static WordToken Finish(char[] word, int length, bool hasDigit, ReadOnlySpan<char> text, int start, int end)
     {
         var hash = StableHash64.HashLower(word.AsSpan(0, length));
         var negation = length <= MaxNegationLength && Negations.Contains(hash);
-        return new WordToken(hash, hasDigit, negation);
+        var identifier = IsIdentifier(word, length, hasDigit, text, start, end);
+        var identifierHash = identifier ? StableHash64.Hash(word.AsSpan(0, length)) : 0UL;
+        return new WordToken(hash, hasDigit, negation, false, identifier, identifierHash);
+    }
+
+    // A name, a snippet id, or part of a dotted name. Ordinary words, including a capital at the start of a sentence, are not.
+    private static bool IsIdentifier(char[] word, int length, bool hasDigit, ReadOnlySpan<char> text, int start, int end)
+    {
+        if (HasInternalCapital(word, length) || IsAllCaps(word, length) || (hasDigit && HasLetter(word, length)))
+        {
+            return true;
+        }
+
+        if (IsDottedPart(text, start, end))
+        {
+            return true;
+        }
+
+        return IsMidSentenceName(word, length, text, start);
+    }
+
+    private static bool HasInternalCapital(char[] word, int length)
+    {
+        for (var i = 1; i < length; i++)
+        {
+            if (char.IsUpper(word[i]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsAllCaps(char[] word, int length)
+    {
+        if (length < 2)
+        {
+            return false;
+        }
+
+        var letter = false;
+        for (var i = 0; i < length; i++)
+        {
+            if (!char.IsLetter(word[i]))
+            {
+                return false;
+            }
+
+            letter = true;
+            if (char.IsLower(word[i]))
+            {
+                return false;
+            }
+        }
+
+        return letter;
+    }
+
+    private static bool HasLetter(char[] word, int length)
+    {
+        for (var i = 0; i < length; i++)
+        {
+            if (char.IsLetter(word[i]))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsDottedPart(ReadOnlySpan<char> text, int start, int end)
+    {
+        if (start > 1 && text[start - 1] == '.' && char.IsLetterOrDigit(text[start - 2]))
+        {
+            return true;
+        }
+
+        return end + 1 < text.Length && text[end] == '.' && char.IsLetterOrDigit(text[end + 1]);
+    }
+
+    // "Indexes" in the middle of a sentence. "Beginning" at the start is just a word.
+    private static bool IsMidSentenceName(char[] word, int length, ReadOnlySpan<char> text, int start)
+    {
+        if (length < 2 || !char.IsUpper(word[0]) || IsSentenceStart(text, start))
+        {
+            return false;
+        }
+
+        for (var i = 1; i < length; i++)
+        {
+            if (!char.IsLower(word[i]))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool IsSentenceStart(ReadOnlySpan<char> text, int start)
+    {
+        var i = start - 1;
+        while (i >= 0)
+        {
+            var c = text[i];
+            if (c is '.' or '!' or '?' or ':' or ';')
+            {
+                return true;
+            }
+
+            if (char.IsWhiteSpace(c) || char.IsPunctuation(c) || c is '#' or '>')
+            {
+                i--;
+                continue;
+            }
+
+            return false;
+        }
+
+        return true;
     }
 
     // A letter (or mark, or digit) of a script that is written without spaces. Punctuation of those scripts is not.

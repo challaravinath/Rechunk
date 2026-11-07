@@ -22,9 +22,11 @@ public sealed class BandedSimHashIndex : INearDuplicateIndex
 
     public ValueTask AddAsync(ChunkId id, string scope, ChunkFingerprint fingerprint, CancellationToken ct = default)
     {
-        var payload = new byte[16];
+        var payload = new byte[32];
         BinaryPrimitives.WriteUInt64LittleEndian(payload, fingerprint.SimHash);
         BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(8), fingerprint.GuardSignature);
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(16), fingerprint.ContentSignature);
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(24), fingerprint.IdentifierSignature);
         return _storage.PutAsync(scope, BandKind.SimHash, id.Value, payload, Keys(fingerprint.SimHash), ct);
     }
 
@@ -50,10 +52,12 @@ public sealed class BandedSimHashIndex : INearDuplicateIndex
         {
             var other = BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload);
             var guard = BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload.AsSpan(8));
+            var content = entry.Payload.Length >= 32 ? BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload.AsSpan(16)) : 0UL;
+            var identifiers = entry.Payload.Length >= 32 ? BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload.AsSpan(24)) : 0UL;
             var distance = BitOperations.PopCount(other ^ fingerprint.SimHash);
             if (distance <= MaxHammingDistance)
             {
-                found.Add(new NearDuplicateMatch(new ChunkId(entry.Id), MatchStage.SimHash, distance, null, guard));
+                found.Add(new NearDuplicateMatch(new ChunkId(entry.Id), MatchStage.SimHash, distance, null, guard, content, identifiers));
             }
         }
 

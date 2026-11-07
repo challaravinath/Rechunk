@@ -11,6 +11,19 @@ internal static class StableHash64
     private const ulong FnvOffset = 0xcbf29ce484222325UL;
     private const ulong FnvPrime = 0x00000100000001b3UL;
 
+    /// <summary>Hash of the characters as they are written, so "Style" and "style" stay apart.</summary>
+    public static ulong Hash(ReadOnlySpan<char> chars)
+    {
+        var h = FnvOffset;
+        foreach (var c in chars)
+        {
+            h = (h ^ (byte)c) * FnvPrime;
+            h = (h ^ (byte)(c >> 8)) * FnvPrime;
+        }
+
+        return Mix(h);
+    }
+
     /// <summary>Hash of the lower case form of the characters. Lower casing is char.ToLowerInvariant.</summary>
     public static ulong HashLower(ReadOnlySpan<char> chars)
     {

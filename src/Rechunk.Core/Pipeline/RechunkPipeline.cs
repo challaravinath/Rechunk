@@ -12,7 +12,9 @@ namespace Rechunk;
 ///
 /// When both near stages are on, MinHash does two jobs. It confirms what SimHash found (unless
 /// SimHash.ConfirmWithMinHash is false), and it catches looser duplicates that SimHash missed.
-/// The false merge guard applies to both: chunks whose numbers or negations differ are never merged.
+/// The number guard applies to both, and so does the identifier guard: a pair whose only difference
+/// is a name or a snippet id is not merged. Chunks that are too short, or mostly code or markup,
+/// never reach these stages. The exact stage still sees them.
 ///
 /// A chunk that is skipped as a near duplicate is not added to the near indexes. The chunk it matched
 /// stands for it from then on, and its exact hash is pointed at that chunk. This keeps the indexes small
@@ -365,12 +367,14 @@ public sealed class RechunkPipeline
     {
         if (fingerprint.HasSimHash)
         {
-            simHashOverlay?.Add(id, scope, fingerprint.SimHash, fingerprint.GuardSignature);
+            simHashOverlay?.Add(
+                id, scope, fingerprint.SimHash, fingerprint.GuardSignature, fingerprint.ContentSignature, fingerprint.IdentifierSignature);
         }
 
         if (fingerprint.HasMinHash)
         {
-            minHashOverlay?.Add(id, scope, fingerprint.MinHash.Span, fingerprint.GuardSignature);
+            minHashOverlay?.Add(
+                id, scope, fingerprint.MinHash.Span, fingerprint.GuardSignature, fingerprint.ContentSignature, fingerprint.IdentifierSignature);
         }
     }
 
@@ -454,18 +458,28 @@ public sealed class RechunkPipeline
         return stored ?? overlay?.EstimateJaccard(scope, id, fingerprint.MinHash.Span);
     }
 
-    // the false merge guard: close wording, but different numbers or negations
+    // close wording, but different numbers, negations, or only an identifier
     private bool Blocked(ChunkFingerprint fingerprint, NearDuplicateMatch candidate, ChunkInput chunk)
     {
-        if (!_options.GuardNumbersAndNegations || candidate.GuardSignature == fingerprint.GuardSignature)
+        if (_options.GuardNumbersAndNegations && candidate.GuardSignature != fingerprint.GuardSignature)
         {
-            return false;
+            _logger.LogDebug(
+                "Chunk {Ordinal} is close to {Existing} but differs in numbers or negations, keeping both",
+                chunk.Ordinal, Short(candidate.Existing.Value));
+            return true;
         }
 
-        _logger.LogDebug(
-            "Chunk {Ordinal} is close to {Existing} but differs in numbers or negations, keeping both",
-            chunk.Ordinal, Short(candidate.Existing.Value));
-        return true;
+        if (_options.GuardIdentifierOnlyChanges
+            && candidate.ContentSignature == fingerprint.ContentSignature
+            && candidate.IdentifierSignature != fingerprint.IdentifierSignature)
+        {
+            _logger.LogDebug(
+                "Chunk {Ordinal} is close to {Existing} but differs only in identifiers, keeping both",
+                chunk.Ordinal, Short(candidate.Existing.Value));
+            return true;
+        }
+
+        return false;
     }
 
     private DedupDecision Repeat(

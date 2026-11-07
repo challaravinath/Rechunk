@@ -22,13 +22,20 @@ public sealed class SqliteRevisionStoreTests : RevisionStoreContract
 
 public sealed class RedisRevisionStoreTests : RevisionStoreContract
 {
-    private RedisTestEnvironment? _redis;
+    // The race tests call Create on several threads before any store exists, so the prefix is chosen once.
+    private readonly Lazy<RedisTestEnvironment> _redis = new(() => new RedisTestEnvironment());
 
     protected override IRevisionStore Create()
     {
-        _redis ??= new RedisTestEnvironment();
-        return new RedisRevisionStore(_redis.Redis, new RedisStorageOptions { KeyPrefix = _redis.Prefix });
+        var env = _redis.Value;
+        return new RedisRevisionStore(env.Redis, new RedisStorageOptions { KeyPrefix = env.Prefix });
     }
 
-    public override void Dispose() => _redis?.Dispose();
+    public override void Dispose()
+    {
+        if (_redis.IsValueCreated)
+        {
+            _redis.Value.Dispose();
+        }
+    }
 }

@@ -33,11 +33,13 @@ public sealed class BandedMinHashIndex : IMinHashIndex
         var signature = fingerprint.MinHash.Span;
         CheckLength(signature);
 
-        var payload = new byte[8 + (4 * signature.Length)];
+        var payload = new byte[HeaderBytes + (4 * signature.Length)];
         BinaryPrimitives.WriteUInt64LittleEndian(payload, fingerprint.GuardSignature);
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(8), fingerprint.ContentSignature);
+        BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(16), fingerprint.IdentifierSignature);
         for (var i = 0; i < signature.Length; i++)
         {
-            BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(8 + (4 * i)), signature[i]);
+            BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(HeaderBytes + (4 * i)), signature[i]);
         }
 
         return _storage.PutAsync(scope, BandKind.MinHash, id.Value, payload, Keys(signature), ct);
@@ -69,7 +71,9 @@ public sealed class BandedMinHashIndex : IMinHashIndex
             if (jaccard >= Threshold)
             {
                 var guard = BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload);
-                found.Add(new NearDuplicateMatch(new ChunkId(entry.Id), MatchStage.MinHash, null, jaccard, guard));
+                var content = entry.Payload.Length >= HeaderBytes ? BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload.AsSpan(8)) : 0UL;
+                var identifiers = entry.Payload.Length >= HeaderBytes ? BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload.AsSpan(16)) : 0UL;
+                found.Add(new NearDuplicateMatch(new ChunkId(entry.Id), MatchStage.MinHash, null, jaccard, guard, content, identifiers));
             }
         }
 
@@ -87,12 +91,14 @@ public sealed class BandedMinHashIndex : IMinHashIndex
         return payload is null ? null : MinHasher.EstimateJaccard(signature.Span, ReadSignature(payload));
     }
 
+    private const int HeaderBytes = 24;
+
     private static uint[] ReadSignature(byte[] payload)
     {
-        var signature = new uint[(payload.Length - 8) / 4];
+        var signature = new uint[(payload.Length - HeaderBytes) / 4];
         for (var i = 0; i < signature.Length; i++)
         {
-            signature[i] = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(8 + (4 * i)));
+            signature[i] = BinaryPrimitives.ReadUInt32LittleEndian(payload.AsSpan(HeaderBytes + (4 * i)));
         }
 
         return signature;
