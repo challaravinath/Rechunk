@@ -202,3 +202,7 @@ dotnet run -c Release --project benchmarks/Rechunk.RealData -- dotnet-docs/docs 
 ```
 
 Any other folder of markdown works the same way. Pass the folder, and `--sample` when you do not want every file.
+
+## Source and license
+
+The sample comes from the [dotnet/docs](https://github.com/dotnet/docs) repo, which is published by Microsoft under the Creative Commons Attribution 4.0 license. No files from it are committed here; the commands above fetch them.

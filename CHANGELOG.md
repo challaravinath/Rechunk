@@ -4,17 +4,13 @@ All notable changes to Rechunk are listed here.
 
 ## 0.2.0 (planned)
 
-### SQL Server and Azure SQL store
-A new `Rechunk.Storage.SqlServer` package. Teams that already run on SQL Server or Azure SQL can share dedup state across workers without adding Redis.
+### Keyed chunk ids
+Chunk ids and fingerprints are built with a secret key per scope, so a stored id can no longer be matched against a guessed text. Destroying a scope's key makes everything stored for that scope unreadable. This changes every chunk id, so existing stores need the migration step that ships with this release.
 
-### Lease renewal
-Workers keep renewing the lease on a chunk while a slow embed is still running. Long batches or a throttled embedding API will no longer cause the same chunk to be embedded twice.
+### Threat model
+A short document on what Rechunk protects, what it does not, and what still leaks, such as embeddings in your vector store.
 
-### Near copies across workers
-Clear behavior when two workers see near copies of the same text at the same moment, along with documentation of the trade-off. You will know exactly when a double embed can happen and how it gets cleaned up.
-
-### API documentation
-XML docs on the public API, so every type and method explains itself in IntelliSense.
+SQL Server, lease renewal and the other items that used to be listed here have moved to later versions. See ROADMAP.md.
 
 ## 0.1.0 (2026-11-07)
 
