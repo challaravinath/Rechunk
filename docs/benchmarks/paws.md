@@ -104,3 +104,9 @@ curl -L -o paws-test.parquet https://huggingface.co/datasets/google-research-dat
 ```
 
 sha256 `ae342ff12bb84b84b95f468abf5db6cb7c7bd578271299fe9c99be75b8132f4d`. Write a TSV with the header `id`, `sentence1`, `sentence2`, `label` and pass that path to `--labeled`. `--limit` defaults to 8000, which is the whole test split. Do not commit the file.
+
+## Source and citation
+
+PAWS is published by Google LLC at [google-research-datasets/paws](https://github.com/google-research-datasets/paws) and may be freely used, with credit to Google LLC as the source. No data from it is committed here.
+
+Yuan Zhang, Jason Baldridge and Luheng He. PAWS: Paraphrase Adversaries from Word Scrambling. NAACL 2019.
