@@ -7,8 +7,9 @@ public sealed record WrappedKeyRecord(string Scope, int Version, byte[] Nonce, b
 }
 
 /// <summary>
-/// Where wrapped scope keys live. This foundation ships an in-memory store.
-/// A file or database store can come later. The store keeps copies, so a caller cannot change a record after it is saved.
+/// Where wrapped scope keys live. The in-memory store lasts for one process.
+/// Rechunk.Storage.Sqlite can keep the same wrapped records in the SQLite file.
+/// The store keeps copies, so a caller cannot change a record after it is saved.
 /// </summary>
 public interface IWrappedKeyStore
 {

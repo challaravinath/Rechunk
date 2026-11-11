@@ -127,6 +127,14 @@ internal sealed class SqliteDatabase
             id    TEXT    NOT NULL UNIQUE,
             body  TEXT    NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS rechunk_wrapped_key (
+            scope      TEXT    NOT NULL PRIMARY KEY,
+            version    INTEGER NOT NULL,
+            nonce      BLOB    NOT NULL,
+            tag        BLOB    NOT NULL,
+            ciphertext BLOB    NOT NULL
+        ) WITHOUT ROWID;
         """;
 
     // Changes for databases that an older version created. CREATE TABLE IF NOT EXISTS does not touch an existing table.
