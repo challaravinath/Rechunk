@@ -10,6 +10,9 @@ Chunk ids and fingerprints are built with a secret key per scope, so a stored id
 ### Key provider groundwork
 A caller can wrap a random key per scope, and a helper can build an HMAC chunk id from cleaned text. The write path does not use either yet, so stored ids are unchanged. This is not database privacy protection.
 
+### Wrapped scope keys in SQLite
+The SQLite package can keep each scope's wrapped key in the same file as the other Rechunk tables. A later process that opens that file with the same wrapping key gets the same scope key. The wrapping key is not stored in the file. A backup of the file still contains the wrapped keys, so deleting a row is not secure erase. The caller has to keep the wrapping key. Fingerprint rows and chunk ids are unchanged, and the write path still does not use these keys.
+
 ### Threat model
 A short document on what Rechunk protects, what it does not, and what still leaks, such as embeddings in your vector store.
 
