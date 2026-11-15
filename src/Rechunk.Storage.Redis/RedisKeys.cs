@@ -19,6 +19,12 @@ internal sealed class RedisKeys(string prefix)
 
     public string ExactPattern(string scope) => $"{prefix}:{{{Tag(scope)}}}:x:*";
 
+    public RedisKey Map(string scope) => $"{prefix}:{{{Tag(scope)}}}:map";
+
+    public string AnyExact => prefix + ":*:x:*";
+
+    public string Prefix => prefix;
+
     public RedisKey Entry(string scope, BandKind kind, string id) => $"{prefix}:{{{Tag(scope)}}}:e{(int)kind}:{id}";
 
     public RedisKey Band(string scope, BandKind kind, BandKey key) =>

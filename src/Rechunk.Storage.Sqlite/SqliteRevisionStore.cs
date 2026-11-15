@@ -7,7 +7,7 @@ namespace Rechunk.Storage.Sqlite;
 /// updates the counts of every chunk in one write transaction, so workers on one machine that revise the same document
 /// at the same time get one winner and one conflict.
 /// </summary>
-public sealed class SqliteRevisionStore : IRevisionStore
+public sealed class SqliteRevisionStore : IRevisionStore, IMigratableRevisions
 {
     private const int Active = (int)ChunkRefState.Active;
     private const int Orphaned = (int)ChunkRefState.Orphaned;
@@ -42,6 +42,7 @@ public sealed class SqliteRevisionStore : IRevisionStore
 
         var result = _db.InTransaction(connection =>
         {
+            SqliteKeyedMigration.ThrowIfBusy(connection, request.Scope);
             var current = ReadManifest(connection, request.Scope, request.Document);
             var currentRevision = current?.Revision ?? 0;
             if (currentRevision != request.ExpectedRevision)
@@ -389,6 +390,163 @@ public sealed class SqliteRevisionStore : IRevisionStore
         }
 
         return new DocumentManifest(scope, document, revision, entries, new DateTimeOffset(updated, TimeSpan.Zero), source);
+    }
+
+    public ValueTask SetBusyAsync(string userScope, bool busy, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        _db.InTransaction(connection =>
+        {
+            using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO rechunk_scope_hash (scope, hash_version, key_version, migrating)
+                VALUES ($scope, 1, 0, $busy)
+                ON CONFLICT(scope) DO UPDATE SET migrating = $busy
+                """;
+            command.Parameters.AddWithValue("$scope", userScope);
+            command.Parameters.AddWithValue("$busy", busy ? 1 : 0);
+            command.ExecuteNonQuery();
+            return true;
+        });
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<int> CountOldIdsAsync(string userScope, IReadOnlyDictionary<string, string> map, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using var connection = _db.Open();
+        return ValueTask.FromResult(OldChunks(connection, userScope, map).Sum(d => d.Hits));
+    }
+
+    public ValueTask<int> RewriteNextAsync(string userScope, IReadOnlyDictionary<string, string> map, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var changed = _db.InTransaction(connection =>
+        {
+            var docs = OldChunks(connection, userScope, map);
+            var next = docs.FirstOrDefault(d => d.Hits > 0);
+            if (next.Document is null)
+            {
+                MoveRefs(connection, userScope, map);
+                return -1;
+            }
+
+            var hits = RewriteDocument(connection, userScope, next.Document, map);
+            MoveRefs(connection, userScope, map);
+            return hits;
+        });
+        return ValueTask.FromResult(changed);
+    }
+
+    private static List<(string? Document, int Hits)> OldChunks(SqliteConnection connection, string userScope, IReadOnlyDictionary<string, string> map)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT document, id, target, replaces FROM rechunk_doc_chunk WHERE scope = $scope";
+        command.Parameters.AddWithValue("$scope", userScope);
+        var hits = new Dictionary<string, int>(StringComparer.Ordinal);
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            var document = reader.GetString(0);
+            var count = 0;
+            if (map.ContainsKey(reader.GetString(1)))
+            {
+                count++;
+            }
+
+            if (map.ContainsKey(reader.GetString(2)))
+            {
+                count++;
+            }
+
+            if (!reader.IsDBNull(3) && map.ContainsKey(reader.GetString(3)))
+            {
+                count++;
+            }
+
+            hits[document] = hits.GetValueOrDefault(document) + count;
+        }
+
+        return hits.Select(p => ((string?)p.Key, p.Value)).ToList();
+    }
+
+    private static int RewriteDocument(SqliteConnection connection, string scope, string document, IReadOnlyDictionary<string, string> map)
+    {
+        var changed = 0;
+        foreach (var (column, extra) in new[] { ("id", string.Empty), ("target", string.Empty), ("replaces", " AND replaces IS NOT NULL") })
+        {
+            foreach (var pair in map)
+            {
+                using var command = connection.CreateCommand();
+                command.CommandText = "UPDATE rechunk_doc_chunk SET " + column + " = $new WHERE scope = $scope AND document = $document AND " + column + " = $old" + extra;
+                command.Parameters.AddWithValue("$new", pair.Value);
+                command.Parameters.AddWithValue("$scope", scope);
+                command.Parameters.AddWithValue("$document", document);
+                command.Parameters.AddWithValue("$old", pair.Key);
+                changed += command.ExecuteNonQuery();
+            }
+        }
+
+        return changed;
+    }
+
+    private static void MoveRefs(SqliteConnection connection, string scope, IReadOnlyDictionary<string, string> map)
+    {
+        foreach (var pair in map)
+        {
+            using var read = connection.CreateCommand();
+            read.CommandText = "SELECT count, state, holder, lease_until FROM rechunk_ref WHERE scope = $scope AND chunk = $old";
+            read.Parameters.AddWithValue("$scope", scope);
+            read.Parameters.AddWithValue("$old", pair.Key);
+            using var reader = read.ExecuteReader();
+            if (!reader.Read())
+            {
+                continue;
+            }
+
+            var count = reader.GetInt32(0);
+            var state = reader.GetInt32(1);
+            var holder = reader.GetString(2);
+            var lease = reader.GetInt64(3);
+            reader.Close();
+            using (var insert = connection.CreateCommand())
+            {
+                insert.CommandText = """
+                    INSERT INTO rechunk_ref (scope, chunk, count, state, holder, lease_until)
+                    VALUES ($scope, $new, $count, $state, $holder, $lease)
+                    ON CONFLICT(scope, chunk) DO UPDATE SET count = count + $count
+                    """;
+                insert.Parameters.AddWithValue("$scope", scope);
+                insert.Parameters.AddWithValue("$new", pair.Value);
+                insert.Parameters.AddWithValue("$count", count);
+                insert.Parameters.AddWithValue("$state", state);
+                insert.Parameters.AddWithValue("$holder", holder);
+                insert.Parameters.AddWithValue("$lease", lease);
+                insert.ExecuteNonQuery();
+            }
+
+            using var delete = connection.CreateCommand();
+            delete.CommandText = "DELETE FROM rechunk_ref WHERE scope = $scope AND chunk = $old";
+            delete.Parameters.AddWithValue("$scope", scope);
+            delete.Parameters.AddWithValue("$old", pair.Key);
+            delete.ExecuteNonQuery();
+        }
+
+        foreach (var pair in map)
+        {
+            using var alias = connection.CreateCommand();
+            alias.CommandText = "UPDATE OR IGNORE rechunk_alias SET alias = $new WHERE scope = $scope AND alias = $old";
+            alias.Parameters.AddWithValue("$scope", scope);
+            alias.Parameters.AddWithValue("$new", pair.Value);
+            alias.Parameters.AddWithValue("$old", pair.Key);
+            alias.ExecuteNonQuery();
+            using var target = connection.CreateCommand();
+            target.CommandText = "UPDATE OR IGNORE rechunk_alias SET target = $new WHERE scope = $scope AND target = $old";
+            target.Parameters.AddWithValue("$scope", scope);
+            target.Parameters.AddWithValue("$new", pair.Value);
+            target.Parameters.AddWithValue("$old", pair.Key);
+            target.ExecuteNonQuery();
+        }
     }
 
     private static void Run(SqliteConnection connection, string sql, params (string Name, object? Value)[] parameters)

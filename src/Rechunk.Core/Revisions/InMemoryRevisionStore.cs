@@ -4,12 +4,13 @@ namespace Rechunk;
 /// Keeps document manifests and chunk counts in this process. The default, good for tests and a single instance.
 /// Use the SQLite or Redis package when more than one process revises documents.
 /// </summary>
-public sealed class InMemoryRevisionStore : IRevisionStore
+public sealed class InMemoryRevisionStore : IRevisionStore, IMigratableRevisions
 {
     private readonly object _gate = new();
     private readonly Dictionary<(string Scope, string Document), DocumentManifest> _docs = new();
     private readonly Dictionary<(string Scope, string Chunk), Ref> _refs = new();
     private readonly Dictionary<(string Scope, string Chunk), HashSet<string>> _aliases = new();
+    private readonly HashSet<string> _busy = new(StringComparer.Ordinal);
 
     public ValueTask<DocumentManifest?> GetAsync(string scope, DocumentId document, CancellationToken ct = default)
     {
@@ -29,6 +30,11 @@ public sealed class InMemoryRevisionStore : IRevisionStore
 
         lock (_gate)
         {
+            if (_busy.Contains(request.Scope))
+            {
+                throw new MigrationInProgressException(request.Scope);
+            }
+
             _docs.TryGetValue((request.Scope, request.Document.Value), out var current);
             var currentRevision = current?.Revision ?? 0;
             if (currentRevision != request.ExpectedRevision)
@@ -231,6 +237,136 @@ public sealed class InMemoryRevisionStore : IRevisionStore
                 .ToList();
             return ValueTask.FromResult(found);
         }
+    }
+
+    public ValueTask SetBusyAsync(string userScope, bool busy, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (busy)
+            {
+                _busy.Add(userScope);
+            }
+            else
+            {
+                _busy.Remove(userScope);
+            }
+        }
+
+        return ValueTask.CompletedTask;
+    }
+
+    public ValueTask<int> CountOldIdsAsync(string userScope, IReadOnlyDictionary<string, string> map, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            return ValueTask.FromResult(CountOld(userScope, map));
+        }
+    }
+
+    public ValueTask<int> RewriteNextAsync(string userScope, IReadOnlyDictionary<string, string> map, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            var doc = _docs.FirstOrDefault(p => p.Key.Scope == userScope && CountDoc(p.Value, map) > 0);
+            if (doc.Value is null)
+            {
+                RewriteRefs(userScope, map);
+                return ValueTask.FromResult(-1);
+            }
+
+            var changed = RewriteDoc(userScope, doc.Key.Document, map);
+            return ValueTask.FromResult(changed);
+        }
+    }
+
+    private int CountOld(string userScope, IReadOnlyDictionary<string, string> map)
+    {
+        var count = 0;
+        foreach (var doc in _docs.Values.Where(d => d.Scope == userScope))
+        {
+            count += CountDoc(doc, map);
+        }
+
+        count += _refs.Keys.Count(k => k.Scope == userScope && map.ContainsKey(k.Chunk));
+        return count;
+    }
+
+    private static int CountDoc(DocumentManifest doc, IReadOnlyDictionary<string, string> map)
+    {
+        var count = 0;
+        foreach (var entry in doc.Entries)
+        {
+            if (map.ContainsKey(entry.Id.Value))
+            {
+                count++;
+            }
+
+            if (map.ContainsKey(entry.Target.Value) && entry.Target != entry.Id)
+            {
+                count++;
+            }
+
+            if (entry.Replaces is { } replaces && map.ContainsKey(replaces.Value))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private int RewriteDoc(string userScope, string document, IReadOnlyDictionary<string, string> map)
+    {
+        var current = _docs[(userScope, document)];
+        var changed = 0;
+        var entries = current.Entries.Select(entry =>
+        {
+            var id = Map(entry.Id.Value, map, ref changed);
+            var target = Map(entry.Target.Value, map, ref changed);
+            var replaces = entry.Replaces is null ? null : Map(entry.Replaces.Value.Value, map, ref changed);
+            return entry with
+            {
+                Id = new ChunkId(id),
+                Target = new ChunkId(target),
+                Replaces = replaces is null ? null : new ChunkId(replaces),
+            };
+        }).ToList();
+        _docs[(userScope, document)] = current with { Entries = entries };
+        RewriteRefs(userScope, map);
+        return changed;
+    }
+
+    private void RewriteRefs(string userScope, IReadOnlyDictionary<string, string> map)
+    {
+        foreach (var pair in _refs.Where(p => p.Key.Scope == userScope && map.ContainsKey(p.Key.Chunk)).ToList())
+        {
+            var next = map[pair.Key.Chunk];
+            _refs.Remove(pair.Key);
+            _refs[(userScope, next)] = pair.Value;
+        }
+
+        foreach (var pair in _aliases.Where(p => p.Key.Scope == userScope).ToList())
+        {
+            var target = map.TryGetValue(pair.Key.Chunk, out var mapped) ? mapped : pair.Key.Chunk;
+            var set = new HashSet<string>(pair.Value.Select(a => map.TryGetValue(a, out var n) ? n : a), StringComparer.Ordinal);
+            _aliases.Remove(pair.Key);
+            _aliases[(userScope, target)] = set;
+        }
+    }
+
+    private static string Map(string id, IReadOnlyDictionary<string, string> map, ref int changed)
+    {
+        if (!map.TryGetValue(id, out var next) || next == id)
+        {
+            return id;
+        }
+
+        changed++;
+        return next;
     }
 
     private sealed class Ref

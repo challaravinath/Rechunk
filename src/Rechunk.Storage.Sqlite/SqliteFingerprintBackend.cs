@@ -9,14 +9,16 @@ namespace Rechunk.Storage.Sqlite;
 /// SQLite lets one writer in at a time, which is fine for a single machine or a modest worker pool and is not meant
 /// for a large fleet (use the Redis backend or your own SQL one for that).
 /// </summary>
-public sealed class SqliteFingerprintBackend : IFingerprintBackend
+public sealed class SqliteFingerprintBackend : IFingerprintBackend, IMigratableFingerprints
 {
     private readonly SqliteDatabase _db;
+    private readonly SqliteKeyedMigration _migration;
 
     public SqliteFingerprintBackend(SqliteStorageOptions options)
     {
         ArgumentNullException.ThrowIfNull(options);
         _db = new SqliteDatabase(options.ConnectionString);
+        _migration = new SqliteKeyedMigration(_db);
     }
 
     public SqliteFingerprintBackend(string connectionString)
@@ -36,6 +38,7 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
 
         var result = _db.InTransaction(connection =>
         {
+            SqliteKeyedMigration.ThrowIfBusy(connection, request.Scope);
             EnsureScope(connection, request);
             var row = ReadRow(connection, request.Scope, request.ExactHash.Span);
             if (row is null)
@@ -81,6 +84,7 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
 
         var result = _db.InTransaction(connection =>
         {
+            SqliteKeyedMigration.ThrowIfBusy(connection, request.Scope);
             var row = ReadRow(connection, request.Scope, request.ExactHash.Span);
             if (row is null)
             {
@@ -112,6 +116,7 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
 
         // one statement is atomic on its own
         using var connection = _db.Open();
+        SqliteKeyedMigration.ThrowIfBusy(connection, request.Scope);
         using var command = connection.CreateCommand();
         command.CommandText =
             "DELETE FROM rechunk_exact WHERE scope = $scope AND hash = $hash AND committed = 0 AND holder = $holder AND chunk = $chunk";
@@ -138,6 +143,7 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
     {
         ct.ThrowIfCancellationRequested();
         using var connection = _db.Open();
+        SqliteKeyedMigration.ThrowIfBusy(connection, scope);
         using var command = connection.CreateCommand();
         command.CommandText = "DELETE FROM rechunk_exact WHERE scope = $scope AND hash = $hash";
         command.Parameters.AddWithValue("$scope", scope);
@@ -149,6 +155,7 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
     {
         ct.ThrowIfCancellationRequested();
         using var connection = _db.Open();
+        SqliteKeyedMigration.ThrowIfBusy(connection, scope);
         using var command = connection.CreateCommand();
         command.CommandText = "DELETE FROM rechunk_exact WHERE scope = $scope AND hash = $hash AND committed = 1 AND chunk = $chunk";
         command.Parameters.AddWithValue("$scope", scope);
@@ -192,6 +199,7 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
         ct.ThrowIfCancellationRequested();
         _db.InTransaction(connection =>
         {
+            SqliteKeyedMigration.ThrowIfBusy(connection, scope);
             using (var entry = connection.CreateCommand())
             {
                 entry.CommandText = "INSERT OR REPLACE INTO rechunk_band_entry (scope, kind, id, payload) VALUES ($scope, $kind, $id, $payload)";
@@ -228,6 +236,7 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
         ct.ThrowIfCancellationRequested();
         var removed = _db.InTransaction(connection =>
         {
+            SqliteKeyedMigration.ThrowIfBusy(connection, scope);
             using var key = connection.CreateCommand();
             key.CommandText = "DELETE FROM rechunk_band_key WHERE scope = $scope AND kind = $kind AND band = $band AND key = $key AND id = $id";
             var band = key.Parameters.Add("$band", SqliteType.Integer);
@@ -302,6 +311,20 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
         IReadOnlyList<BandEntry> entries = found.Select(p => new BandEntry(p.Key, p.Value)).ToList();
         return ValueTask.FromResult(entries);
     }
+
+    public ValueTask<MigrationPreview> PreviewAsync(string userScope, ScopeKey key, RechunkOptions options, CancellationToken ct = default) =>
+        _migration.PreviewAsync(userScope, key, options, ct);
+
+    public ValueTask BeginAsync(string userScope, CancellationToken ct = default) => _migration.BeginAsync(userScope, ct);
+
+    public ValueTask<FingerprintMove> MoveNextAsync(string userScope, ScopeKey key, RechunkOptions options, CancellationToken ct = default) =>
+        _migration.MoveNextAsync(userScope, key, options, ct);
+
+    public ValueTask<IReadOnlyDictionary<string, string>> ReadMapAsync(string userScope, CancellationToken ct = default) =>
+        _migration.ReadMapAsync(userScope, ct);
+
+    public ValueTask CompleteAsync(string userScope, int keyVersion, CancellationToken ct = default) =>
+        _migration.CompleteAsync(userScope, keyVersion, ct);
 
     private readonly record struct Row(string Chunk, bool Committed, string Holder, long LeaseUntil, int HashVersion, int KeyVersion, string TextId);
 

@@ -5,7 +5,7 @@ namespace Rechunk;
 /// uses on its own. Good for tests, a single instance and local runs. It does nothing for workers in different
 /// processes, use one of the storage packages for that.
 /// </summary>
-public sealed class InMemoryFingerprintStore : IFingerprintStore
+public sealed partial class InMemoryFingerprintStore : IFingerprintStore, IMigratableFingerprints
 {
     private readonly object _gate = new();
     private readonly Dictionary<(string Scope, string Hash), Row> _rows = new();
@@ -48,6 +48,7 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
 
         lock (_gate)
         {
+            ThrowIfMigrating(request.Scope);
             EnsureScope(request.Scope, request.HashVersion, request.KeyVersion);
             if (!_rows.TryGetValue(key, out var row))
             {
@@ -99,6 +100,7 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
 
         lock (_gate)
         {
+            ThrowIfMigrating(request.Scope);
             if (!_rows.TryGetValue(key, out var row))
             {
                 status = CommitStatus.NotHeld;
@@ -153,6 +155,7 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
 
         lock (_gate)
         {
+            ThrowIfMigrating(request.Scope);
             if (_rows.TryGetValue(key, out var row)
                 && !row.Committed
                 && row.Holder == request.Holder
@@ -181,6 +184,7 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
         var removed = 0;
         lock (_gate)
         {
+            ThrowIfMigrating(scope);
             foreach (var hash in exactHashes)
             {
                 var key = Key(scope, hash);
@@ -204,6 +208,7 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
         var removed = 0;
         lock (_gate)
         {
+            ThrowIfMigrating(scope);
             foreach (var hash in exactHashes)
             {
                 var key = Key(scope, hash);
@@ -255,6 +260,7 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
         ct.ThrowIfCancellationRequested();
         lock (_gate)
         {
+            ThrowIfMigrating(scope);
             var key = Key(scope, hash);
             if (!_rows.TryGetValue(key, out var row))
             {

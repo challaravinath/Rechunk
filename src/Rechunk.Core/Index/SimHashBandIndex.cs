@@ -23,7 +23,7 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
     private readonly ConcurrentDictionary<string, Shard> _shards = new(StringComparer.Ordinal);
     private readonly SimHashBandLayout _layout;
     private readonly int _bandCount;
-    private readonly BandKeyDirectory? _bands;
+    private BandKeyDirectory? _bands;
 
     public SimHashBandIndex(int maxHammingDistance = 3)
         : this(maxHammingDistance, null)
@@ -44,6 +44,46 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
     }
 
     public int MaxHammingDistance { get; }
+
+    internal void Attach(BandKeyDirectory? bands) => _bands = bands;
+
+    internal bool Contains(string scope, ChunkId id)
+    {
+        if (!_shards.TryGetValue(scope, out var shard))
+        {
+            return false;
+        }
+
+        lock (shard.Gate)
+        {
+            return shard.Items.ContainsKey(id);
+        }
+    }
+
+    /// <summary>Removes the chunk and returns the signature that was stored. Uses whatever band keys are active now.</summary>
+    internal bool TryRemove(string scope, ChunkId id, out ulong simHash, out ulong guard, out ulong content, out ulong identifier)
+    {
+        simHash = guard = content = identifier = 0;
+        if (!_shards.TryGetValue(scope, out var shard))
+        {
+            return false;
+        }
+
+        lock (shard.Gate)
+        {
+            if (!shard.Items.Remove(id, out var entry))
+            {
+                return false;
+            }
+
+            RemoveFromBuckets(scope, shard, entry);
+            simHash = entry.SimHash;
+            guard = entry.GuardSignature;
+            content = entry.ContentSignature;
+            identifier = entry.IdentifierSignature;
+            return true;
+        }
+    }
 
     /// <summary>Number of chunks stored for the scope.</summary>
     public int Count(string scope)

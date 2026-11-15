@@ -17,7 +17,7 @@ namespace Rechunk;
 public sealed class MinHashLshIndex : IMinHashIndex
 {
     private readonly ConcurrentDictionary<string, Shard> _shards = new(StringComparer.Ordinal);
-    private readonly BandKeyDirectory? _bands;
+    private BandKeyDirectory? _bands;
 
     public MinHashLshIndex(MinHashOptions options)
         : this(options, null)
@@ -76,6 +76,46 @@ public sealed class MinHashLshIndex : IMinHashIndex
     public LshParameters Lsh { get; }
 
     public int Bands => Lsh.Bands;
+
+    internal void Attach(BandKeyDirectory? bands) => _bands = bands;
+
+    internal bool Contains(string scope, ChunkId id)
+    {
+        if (!_shards.TryGetValue(scope, out var shard))
+        {
+            return false;
+        }
+
+        lock (shard.Gate)
+        {
+            return shard.Items.ContainsKey(id);
+        }
+    }
+
+    internal bool TryRemove(string scope, ChunkId id, out uint[] signature, out ulong guard, out ulong content, out ulong identifier)
+    {
+        signature = Array.Empty<uint>();
+        guard = content = identifier = 0;
+        if (!_shards.TryGetValue(scope, out var shard))
+        {
+            return false;
+        }
+
+        lock (shard.Gate)
+        {
+            if (!shard.Items.Remove(id, out var entry))
+            {
+                return false;
+            }
+
+            RemoveFromBuckets(scope, shard, entry);
+            signature = entry.Signature;
+            guard = entry.GuardSignature;
+            content = entry.ContentSignature;
+            identifier = entry.IdentifierSignature;
+            return true;
+        }
+    }
 
     public int Rows => Lsh.Rows;
 

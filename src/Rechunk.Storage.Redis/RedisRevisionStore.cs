@@ -12,7 +12,7 @@ namespace Rechunk.Storage.Redis;
 /// Times (the sweep lease) are written as milliseconds from the clock of the worker that asks, so the workers should
 /// have clocks that agree to within a good bit less than the lease.
 /// </summary>
-public sealed class RedisRevisionStore : IRevisionStore
+public sealed class RedisRevisionStore : IRevisionStore, IMigratableRevisions
 {
     // States: 0 active, 1 orphaned, 2 retiring.
     // KEYS: 1 document, 2 set of all chunks, 3 pending set, 4 documents of the scope, 5 set of the source the document is
@@ -132,6 +132,140 @@ public sealed class RedisRevisionStore : IRevisionStore
 
     private IDatabase Db => _redis.GetDatabase(_database);
 
+    public async ValueTask SetBusyAsync(string userScope, bool busy, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var version = _keys.ScopeVersion(userScope);
+        if (!await Db.HashExistsAsync(version, "hv").ConfigureAwait(false))
+        {
+            await Db.HashSetAsync(version, [new HashEntry("hv", "1"), new HashEntry("kv", "0")]).ConfigureAwait(false);
+        }
+
+        await Db.HashSetAsync(version, "migrating", busy ? "1" : "0").ConfigureAwait(false);
+    }
+
+    public async ValueTask<int> CountOldIdsAsync(string userScope, IReadOnlyDictionary<string, string> map, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var count = 0;
+        foreach (var name in await Db.SortedSetRangeByRankAsync(_keys.Docs(userScope)).ConfigureAwait(false))
+        {
+            count += CountDoc(await LoadEntries(userScope, name!).ConfigureAwait(false), map);
+        }
+
+        foreach (var id in await Db.SetMembersAsync(_keys.RefSet(userScope)).ConfigureAwait(false))
+        {
+            if (map.ContainsKey(id!))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    public async ValueTask<int> RewriteNextAsync(string userScope, IReadOnlyDictionary<string, string> map, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        foreach (var name in await Db.SortedSetRangeByRankAsync(_keys.Docs(userScope)).ConfigureAwait(false))
+        {
+            var entries = await LoadEntries(userScope, name!).ConfigureAwait(false);
+            if (CountDoc(entries, map) == 0)
+            {
+                continue;
+            }
+
+            var changed = 0;
+            var next = entries.Select(e => e with
+            {
+                I = Swap(e.I, map, ref changed),
+                T = Swap(e.T, map, ref changed),
+                R = e.R is null ? null : Swap(e.R, map, ref changed),
+            }).ToList();
+            await Db.HashSetAsync(_keys.Doc(userScope, name!), "entries", JsonSerializer.Serialize(next)).ConfigureAwait(false);
+            await MoveRefs(userScope, map).ConfigureAwait(false);
+            return changed;
+        }
+
+        await MoveRefs(userScope, map).ConfigureAwait(false);
+        return -1;
+    }
+
+    private async Task<List<EntryJson>> LoadEntries(string scope, string document)
+    {
+        var json = await Db.HashGetAsync(_keys.Doc(scope, document), "entries").ConfigureAwait(false);
+        return json.HasValue ? JsonSerializer.Deserialize<List<EntryJson>>(json!) ?? new List<EntryJson>() : new List<EntryJson>();
+    }
+
+    private static int CountDoc(List<EntryJson> entries, IReadOnlyDictionary<string, string> map)
+    {
+        var count = 0;
+        foreach (var entry in entries)
+        {
+            if (map.ContainsKey(entry.I))
+            {
+                count++;
+            }
+
+            if (map.ContainsKey(entry.T))
+            {
+                count++;
+            }
+
+            if (entry.R is not null && map.ContainsKey(entry.R))
+            {
+                count++;
+            }
+        }
+
+        return count;
+    }
+
+    private static string Swap(string id, IReadOnlyDictionary<string, string> map, ref int changed)
+    {
+        if (!map.TryGetValue(id, out var next) || next == id)
+        {
+            return id;
+        }
+
+        changed++;
+        return next;
+    }
+
+    private async Task MoveRefs(string scope, IReadOnlyDictionary<string, string> map)
+    {
+        foreach (var pair in map)
+        {
+            if (!await Db.KeyExistsAsync(_keys.Ref(scope, pair.Key)).ConfigureAwait(false))
+            {
+                continue;
+            }
+
+            var fields = await Db.HashGetAllAsync(_keys.Ref(scope, pair.Key)).ConfigureAwait(false);
+            await Db.HashSetAsync(_keys.Ref(scope, pair.Value), fields).ConfigureAwait(false);
+            await Db.KeyDeleteAsync(_keys.Ref(scope, pair.Key)).ConfigureAwait(false);
+            await Db.SetRemoveAsync(_keys.RefSet(scope), pair.Key).ConfigureAwait(false);
+            await Db.SetAddAsync(_keys.RefSet(scope), pair.Value).ConfigureAwait(false);
+            var score = await Db.SortedSetScoreAsync(_keys.Pending(scope), pair.Key).ConfigureAwait(false);
+            if (score is not null)
+            {
+                await Db.SortedSetRemoveAsync(_keys.Pending(scope), pair.Key).ConfigureAwait(false);
+                await Db.SortedSetAddAsync(_keys.Pending(scope), pair.Value, score.Value).ConfigureAwait(false);
+            }
+
+            if (await Db.KeyExistsAsync(_keys.Aliases(scope, pair.Key)).ConfigureAwait(false))
+            {
+                var aliases = await Db.SetMembersAsync(_keys.Aliases(scope, pair.Key)).ConfigureAwait(false);
+                var renamed = aliases.Select(a => (RedisValue)(map.TryGetValue(a!, out var n) ? n : (string)a!)).ToArray();
+                await Db.KeyDeleteAsync(_keys.Aliases(scope, pair.Key)).ConfigureAwait(false);
+                if (renamed.Length > 0)
+                {
+                    await Db.SetAddAsync(_keys.Aliases(scope, pair.Value), renamed).ConfigureAwait(false);
+                }
+            }
+        }
+    }
+
     private sealed record EntryJson(int O, string I, string T, string? L, int F, int? P, string? R);
 
     public async ValueTask<DocumentManifest?> GetAsync(string scope, DocumentId document, CancellationToken ct = default)
@@ -159,6 +293,7 @@ public sealed class RedisRevisionStore : IRevisionStore
     {
         ArgumentNullException.ThrowIfNull(request);
         ct.ThrowIfCancellationRequested();
+        await RedisKeyedMigration.ThrowIfBusyAsync(Db, _keys, request.Scope).ConfigureAwait(false);
         RevisionRules.Check(request);
 
         // the plan is made against the manifest we read here, and the script checks the revision, so a change in

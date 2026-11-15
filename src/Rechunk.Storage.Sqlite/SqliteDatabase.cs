@@ -36,7 +36,15 @@ internal sealed class SqliteDatabase
         CREATE TABLE IF NOT EXISTS rechunk_scope_hash (
             scope        TEXT    NOT NULL PRIMARY KEY,
             hash_version INTEGER NOT NULL,
-            key_version  INTEGER NOT NULL
+            key_version  INTEGER NOT NULL,
+            migrating    INTEGER NOT NULL DEFAULT 0
+        ) WITHOUT ROWID;
+
+        CREATE TABLE IF NOT EXISTS rechunk_id_map (
+            scope   TEXT NOT NULL,
+            old_id  TEXT NOT NULL,
+            new_id  TEXT NOT NULL,
+            PRIMARY KEY (scope, old_id)
         ) WITHOUT ROWID;
 
         CREATE TABLE IF NOT EXISTS rechunk_band_entry (
@@ -183,6 +191,7 @@ internal sealed class SqliteDatabase
         AddColumn(connection, "rechunk_exact", "hash_version", "ALTER TABLE rechunk_exact ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1;");
         AddColumn(connection, "rechunk_exact", "key_version", "ALTER TABLE rechunk_exact ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0;");
         AddColumn(connection, "rechunk_exact", "text_id", "ALTER TABLE rechunk_exact ADD COLUMN text_id TEXT NOT NULL DEFAULT '';");
+        AddColumn(connection, "rechunk_scope_hash", "migrating", "ALTER TABLE rechunk_scope_hash ADD COLUMN migrating INTEGER NOT NULL DEFAULT 0;");
         Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_exact_chunk ON rechunk_exact (scope, chunk);");
         Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_exact_text ON rechunk_exact (scope, text_id);");
     }
