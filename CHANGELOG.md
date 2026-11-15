@@ -7,11 +7,14 @@ All notable changes to Rechunk are listed here.
 ### Keyed chunk ids
 Chunk ids and fingerprints are built with a secret key per scope, so a stored id can no longer be matched against a guessed text. Destroying a scope's key makes everything stored for that scope unreadable. This changes every chunk id, so existing stores need the migration step that ships with this release.
 
+### Signature encryption
+When a key provider is set, SimHash and MinHash payloads in SQLite and Redis are AES-GCM ciphertext. The data key is derived from the scope key with its own label. A tampered or swapped payload fails to open. The exact digest column is still stored, and the in memory indexes are not encrypted. See docs/threat-model.md.
+
 ### Keyed id migration
-`KeyedIdMigrator` rewrites one scope from digest ids to keyed ids in memory, SQLite or Redis. It does not run unless you call it. A dry run only reports counts and the old id to new id map, which is what you use to update a vector store. Writes to that scope are refused while a run is in progress. The scope version becomes 2 only when the run finishes. A wrong wrapping key fails before anything is marked. The exact digest and the signatures stay in the clear. Audit rows and dead letters keep the old ids. See docs/keyed-ids.md.
+`KeyedIdMigrator` rewrites one scope from digest ids to keyed ids in memory, SQLite or Redis. It does not run unless you call it. A dry run only reports counts and the old id to new id map, which is what you use to update a vector store. Writes to that scope are refused while a run is in progress. The scope version becomes 2 only when the run finishes. A wrong wrapping key fails before anything is marked. The migration encrypts signature payloads. The exact digest stays as the lookup key. Audit rows and dead letters keep the old ids. See docs/keyed-ids.md.
 
 ### Keyed ids on the write path
-When a key provider is set, chunk ids written by the pipeline are HMAC ids, and fingerprint rows in memory, SQLite and Redis record hash version 2 and the key version. Exact and near duplicate matches stay inside the scope. A scope that already has the other hash version is refused. With no provider, ids and rows stay as they were in 0.1. There is no migration in this change. The exact digest is still stored, and SimHash and MinHash signatures are still stored in the clear, so this is not database privacy. Band lookup keys are SipHash-2-4 under a key derived from the scope key. See docs/keyed-ids.md.
+When a key provider is set, chunk ids written by the pipeline are HMAC ids, and fingerprint rows in memory, SQLite and Redis record hash version 2 and the key version. Exact and near duplicate matches stay inside the scope. A scope that already has the other hash version is refused. With no provider, ids and rows stay as they were in 0.1. The exact digest is still stored. Band lookup keys are SipHash-2-4 under a key derived from the scope key. See docs/keyed-ids.md.
 
 ### Key provider groundwork
 A caller can wrap a random key per scope, and a helper can build an HMAC chunk id from cleaned text.

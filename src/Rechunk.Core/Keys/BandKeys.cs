@@ -65,6 +65,23 @@ internal sealed class BandKeyDirectory
 
     public void Warm(string scope, ScopeKey key) => _cache[scope] = BandKeys.Derive(key);
 
+    public byte[] Seal(string storeScope, string chunkId, string field, ReadOnlySpan<byte> plaintext) =>
+        PayloadCipher.Encrypt(Require(storeScope), storeScope, chunkId, field, plaintext);
+
+    public byte[] Open(string storeScope, string chunkId, string field, ReadOnlySpan<byte> packed) =>
+        PayloadCipher.Decrypt(Require(storeScope), storeScope, chunkId, field, packed);
+
+    private ScopeKey Require(string storeScope)
+    {
+        var user = BandKeys.UserScope(storeScope);
+        if (!_keys.TryGetCached(user, out var key))
+        {
+            throw new KeyUnavailableException(user);
+        }
+
+        return key;
+    }
+
     public ulong Protect(string storeScope, BandKind kind, int band, ulong raw)
     {
         var user = BandKeys.UserScope(storeScope);

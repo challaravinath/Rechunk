@@ -64,7 +64,7 @@ None of these runs scores answer quality. The docs figure is one corpus, and bot
 
 ## Docs
 
-[How it works](docs/how-it-works.md), [stages](docs/stages.md), [shared store](docs/shared-store.md), [revisions](docs/revisions.md), [languages](docs/languages.md), [audit, PII and erasure](docs/audit-pii-erasure.md).
+[How it works](docs/how-it-works.md), [stages](docs/stages.md), [shared store](docs/shared-store.md), [revisions](docs/revisions.md), [languages](docs/languages.md), [audit, PII and erasure](docs/audit-pii-erasure.md), [threat model](docs/threat-model.md).
 
 ## Roadmap
 

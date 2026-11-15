@@ -171,12 +171,12 @@ internal sealed class SqliteKeyedMigration : IMigratableFingerprints
         SqliteConnection connection, string scope, string oldId, string newId, ScopeKey key, SimHashBandLayout layout, LshParameters lsh)
     {
         var wrote = false;
-        wrote |= MoveKind(connection, scope, oldId, newId, BandKind.SimHash, payload => LegacyBands.SimHash(payload, layout, key));
-        wrote |= MoveKind(connection, scope, oldId, newId, BandKind.MinHash, payload => LegacyBands.MinHash(payload, lsh, key));
+        wrote |= MoveKind(connection, scope, oldId, newId, BandKind.SimHash, payload => LegacyBands.SimHash(payload, layout, key), key);
+        wrote |= MoveKind(connection, scope, oldId, newId, BandKind.MinHash, payload => LegacyBands.MinHash(payload, lsh, key), key);
         return wrote;
     }
 
-    private static bool MoveKind(SqliteConnection connection, string scope, string oldId, string newId, BandKind kind, Func<byte[], BandKey[]> keysFor)
+    private static bool MoveKind(SqliteConnection connection, string scope, string oldId, string newId, BandKind kind, Func<byte[], BandKey[]> keysFor, ScopeKey key)
     {
         byte[]? payload;
         using (var read = connection.CreateCommand())
@@ -202,10 +202,12 @@ internal sealed class SqliteKeyedMigration : IMigratableFingerprints
             delete.ExecuteNonQuery();
         }
 
+        var sealedPayload = PayloadCipher.Encrypt(key, scope, newId, kind == BandKind.SimHash ? "simhash" : "minhash", payload);
         using (var rename = connection.CreateCommand())
         {
-            rename.CommandText = "UPDATE rechunk_band_entry SET id = $new WHERE scope = $scope AND kind = $kind AND id = $old";
+            rename.CommandText = "UPDATE rechunk_band_entry SET id = $new, payload = $payload WHERE scope = $scope AND kind = $kind AND id = $old";
             rename.Parameters.AddWithValue("$new", newId);
+            rename.Parameters.AddWithValue("$payload", sealedPayload);
             rename.Parameters.AddWithValue("$scope", scope);
             rename.Parameters.AddWithValue("$kind", (int)kind);
             rename.Parameters.AddWithValue("$old", oldId);
