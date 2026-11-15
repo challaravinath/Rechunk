@@ -28,6 +28,8 @@ public sealed class RechunkPipeline
     private readonly INearDuplicateIndex? _simHashIndex;
     private readonly IMinHashIndex? _minHashIndex;
     private readonly IFingerprintStore? _store;
+    private readonly IKeyProvider? _keys;
+    private readonly BandKeyDirectory? _bands;
     private readonly ILogger _logger;
     private readonly PiiScanner _pii;
 
@@ -38,24 +40,27 @@ public sealed class RechunkPipeline
         ILogger? logger = null,
         INearDuplicateIndex? simHashIndex = null,
         IMinHashIndex? minHashIndex = null,
-        IFingerprintStore? store = null)
+        IFingerprintStore? store = null,
+        IKeyProvider? keys = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _fingerprinter = fingerprinter ?? throw new ArgumentNullException(nameof(fingerprinter));
         _exactIndex = exactIndex ?? throw new ArgumentNullException(nameof(exactIndex));
         _logger = logger ?? NullLogger.Instance;
         _store = store;
+        _keys = keys ?? options.KeyProvider;
+        _bands = _keys is null ? null : BandKeys.For(_keys);
         options.Validate();
         _pii = new PiiScanner(options.Pii);
 
         if (options.SimHash.Enabled)
         {
-            _simHashIndex = simHashIndex ?? store?.SimHash ?? new SimHashBandIndex(options.SimHash.MaxHammingDistance);
+            _simHashIndex = simHashIndex ?? store?.SimHash ?? new SimHashBandIndex(options.SimHash.MaxHammingDistance, _bands);
         }
 
         if (options.MinHash.Enabled)
         {
-            _minHashIndex = minHashIndex ?? store?.MinHash ?? new MinHashLshIndex(options.MinHash);
+            _minHashIndex = minHashIndex ?? store?.MinHash ?? new MinHashLshIndex(options.MinHash, _bands);
         }
     }
 
@@ -66,45 +71,95 @@ public sealed class RechunkPipeline
 
     public static RechunkPipelineBuilder CreateBuilder() => new();
 
-    /// <summary>The id a chunk with this text gets. Same text after cleanup, same id.</summary>
+    /// <summary>The id a chunk with this text gets. Same text after cleanup, same id. Uses <see cref="RechunkOptions.DefaultScope"/> when a key provider is set.</summary>
     public ChunkId IdFor(string text)
     {
         ArgumentNullException.ThrowIfNull(text);
-        return ChunkId.FromExactHash(_fingerprinter.Compute(text).ExactHash.Span);
+        return IdFor(_options.DefaultScope, text, null);
     }
 
     /// <summary>The id a chunk gets, with its language. Same text and same language, same id.</summary>
     public ChunkId IdFor(ChunkInput chunk)
     {
         ArgumentNullException.ThrowIfNull(chunk);
-        return LanguageTags.IdFor(_fingerprinter.Compute(chunk.Text).ExactHash.Span, LanguageFor(chunk));
+        return IdFor(_options.DefaultScope, chunk.Text, chunk.Language);
+    }
+
+    /// <summary>
+    /// The id for this scope. With a key provider the key has to be loaded already, or this throws <see cref="KeyUnavailableException"/>.
+    /// With no provider the id is the hex digest, as in 0.1.
+    /// </summary>
+    public ChunkId IdFor(string scope, string text, string? language = null)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(scope);
+        ArgumentNullException.ThrowIfNull(text);
+        var key = CachedKey(scope);
+        var tag = _options.Language.Resolve(language, text);
+        return IdFrom(_fingerprinter.Compute(text).ExactHash.Span, tag, key);
     }
 
     /// <summary>
     /// The id a chunk gets when it goes through the pipeline. With PII scanning on, the id comes from the masked text, so
     /// use this and not <see cref="IdFor(ChunkInput)"/> to find a chunk that was stored.
     /// </summary>
-    public async ValueTask<ChunkId> IdForAsync(ChunkInput chunk, CancellationToken ct = default)
+    public ValueTask<ChunkId> IdForAsync(ChunkInput chunk, CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(chunk);
-        var (_, id, _) = await IdentifyAsync(chunk, ct).ConfigureAwait(false);
+        return IdForAsync(_options.DefaultScope, chunk, ct);
+    }
+
+    /// <summary>The id the pipeline will store for this chunk in this scope, after the same scan the write path uses.</summary>
+    public async ValueTask<ChunkId> IdForAsync(string scope, ChunkInput chunk, CancellationToken ct = default)
+    {
+        ArgumentNullException.ThrowIfNull(chunk);
+        var key = await KeyForAsync(scope, ct).ConfigureAwait(false);
+        var (_, id, _) = await IdentifyAsync(chunk, key, ct).ConfigureAwait(false);
         return id;
     }
 
     // Scans the chunk if that is on, then works out its id and language from what is left. Returns the scanned chunk too.
     internal async ValueTask<(ChunkInput Chunk, ChunkId Id, string? Language)> IdentifyAsync(
-        ChunkInput chunk, CancellationToken ct = default)
+        ChunkInput chunk, ScopeKey? key, CancellationToken ct = default)
     {
         chunk = (await PrepareAsync(new[] { chunk }, ct).ConfigureAwait(false))[0];
-        var (id, language) = IdentifyPrepared(chunk);
+        var (id, language) = IdentifyPrepared(chunk, key);
         return (chunk, id, language);
     }
 
     // The id and language of a chunk that was scanned already, or that needs no scan.
-    internal (ChunkId Id, string? Language) IdentifyPrepared(ChunkInput chunk)
+    internal (ChunkId Id, string? Language) IdentifyPrepared(ChunkInput chunk, ScopeKey? key = null)
     {
         var language = _options.Language.Resolve(chunk.Language, chunk.Text);
-        return (LanguageTags.IdFor(_fingerprinter.Compute(chunk.Text).ExactHash.Span, language), language);
+        return (IdFrom(_fingerprinter.Compute(chunk.Text).ExactHash.Span, language, key), language);
+    }
+
+    /// <summary>The SHA-256 of the cleaned text. This is still the exact-row key. The keyed id is not reversible to it.</summary>
+    internal byte[] Digest(string text) => _fingerprinter.Compute(text).ExactHash.ToArray();
+
+    /// <summary>Id, digest and language of the text the write path would store, after the same scan.</summary>
+    internal async ValueTask<(ChunkId Id, byte[] Digest, string? Language)> DescribeAsync(
+        string scope, ChunkInput chunk, CancellationToken ct)
+    {
+        var key = await KeyForAsync(scope, ct).ConfigureAwait(false);
+        var (prepared, id, language) = await IdentifyAsync(chunk, key, ct).ConfigureAwait(false);
+        if (prepared.Scan?.Blocked == true)
+        {
+            return (id, Array.Empty<byte>(), language);
+        }
+
+        return (id, Digest(prepared.Text), language);
+    }
+
+    internal async ValueTask<ScopeKey?> KeyForAsync(string scope, CancellationToken ct)
+    {
+        if (_keys is null)
+        {
+            return null;
+        }
+
+        var key = await _keys.GetRequiredAsync(scope, ct).ConfigureAwait(false);
+        _bands?.Warm(scope, key);
+        return key;
     }
 
     /// <summary>
@@ -138,7 +193,8 @@ public sealed class RechunkPipeline
     {
         ArgumentNullException.ThrowIfNull(chunk);
         scope ??= _options.DefaultScope;
-        var (prepared, id, language) = await IdentifyAsync(chunk, ct).ConfigureAwait(false);
+        var key = await KeyForAsync(scope, ct).ConfigureAwait(false);
+        var (prepared, id, language) = await IdentifyAsync(chunk, key, ct).ConfigureAwait(false);
         var matches = new List<StoredMatch>();
         if (prepared.Scan?.Blocked == true)
         {
@@ -194,6 +250,9 @@ public sealed class RechunkPipeline
     {
         ArgumentNullException.ThrowIfNull(chunks);
         userScope ??= _options.DefaultScope;
+        var scopeKey = await KeyForAsync(userScope, ct).ConfigureAwait(false);
+        var hashVersion = scopeKey is null ? ChunkIds.LegacyHashVersion : ChunkIds.HmacHashVersion;
+        var keyVersion = scopeKey?.Version ?? 0;
         chunks = await PrepareAsync(chunks, ct).ConfigureAwait(false);
         var excluded = claimOptions?.NearExclude;
         var languages = new List<string?>(chunks.Count);
@@ -208,10 +267,10 @@ public sealed class RechunkPipeline
         var batchIds = new HashSet<string>();
         var batchEmbedded = new HashSet<string>();
         var dryRunSimHash = overlays && _simHashIndex is not null
-            ? new SimHashBandIndex(_options.SimHash.MaxHammingDistance)
+            ? new SimHashBandIndex(_options.SimHash.MaxHammingDistance, _bands)
             : null;
         var dryRunMinHash = overlays && _minHashIndex is not null
-            ? new MinHashLshIndex(_options.MinHash)
+            ? new MinHashLshIndex(_options.MinHash, _bands)
             : null;
 
         var skipNearDuplicates = _options.OnDuplicate != DuplicatePolicy.Flag;
@@ -236,7 +295,7 @@ public sealed class RechunkPipeline
             }
 
             var fingerprint = _fingerprinter.Compute(chunk.Text);
-            var id = LanguageTags.IdFor(fingerprint.ExactHash.Span, language);
+            var id = IdFrom(fingerprint.ExactHash.Span, language, scopeKey);
 
             // Stage 1: have we seen exactly this text?
             var exact = await _exactIndex.FindAsync(scope, fingerprint.ExactHash, ct).ConfigureAwait(false);
@@ -281,7 +340,11 @@ public sealed class RechunkPipeline
             else if (_store is not null)
             {
                 var claimed = await _store.ClaimAsync(
-                    new ClaimRequest(scope, id, fingerprint.ExactHash, holder, lease), ct).ConfigureAwait(false);
+                    new ClaimRequest(scope, id, fingerprint.ExactHash, holder, lease)
+                    {
+                        HashVersion = hashVersion,
+                        KeyVersion = keyVersion,
+                    }, ct).ConfigureAwait(false);
 
                 if (claimed.Status == ClaimStatus.InFlight)
                 {
@@ -496,4 +559,23 @@ public sealed class RechunkPipeline
             chunk.Ordinal, stage, Short(existing.Value), distance, jaccard);
 
     private static string Short(string value) => value.Length <= 8 ? value : value[..8];
+
+    private ScopeKey? CachedKey(string scope)
+    {
+        if (_keys is null)
+        {
+            return null;
+        }
+
+        if (!_keys.TryGetCached(scope, out var key))
+        {
+            throw new KeyUnavailableException(scope);
+        }
+
+        _bands?.Warm(scope, key);
+        return key;
+    }
+
+    private static ChunkId IdFrom(ReadOnlySpan<byte> digest, string? language, ScopeKey? key) =>
+        key is { } scopeKey ? ChunkIds.Create(digest, language, scopeKey) : LanguageTags.IdFor(digest, language);
 }

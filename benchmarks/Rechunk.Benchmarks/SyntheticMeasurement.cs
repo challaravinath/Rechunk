@@ -140,6 +140,75 @@ public static class SyntheticMeasurement
         output.WriteLine("and it was matched to its own original. Loose variants are below the threshold, so skipping them counts as a wrong merge.");
     }
 
+    /// <summary>
+    /// The same synthetic corpus and the default three-stage setting, once with no key and once with a scope key.
+    /// One warmup pass, then five timed passes. A new pipeline is built for every pass so the indexes start empty.
+    /// </summary>
+    public static async Task RunKeyedCompareAsync(TextWriter output)
+    {
+        var items = BuildCorpus(out _);
+        var wrapping = new byte[32];
+        wrapping[0] = 1;
+        using var keys = new LocalWrappedKeyProvider(wrapping, new InMemoryWrappedKeyStore());
+        await keys.CreateAsync("synthetic");
+
+        output.WriteLine("Keyed compare on the synthetic corpus, all three stages, MinHash confirms SimHash.");
+        output.WriteLine($"chunks: {items.Count}. One warmup pair, then seven interleaved passes. A new pipeline each pass.");
+        output.WriteLine();
+
+        await TimeOnceAsync(items, null);
+        await TimeOnceAsync(items, keys);
+
+        var unkeyed = new double[7];
+        var keyed = new double[7];
+        for (var i = 0; i < unkeyed.Length; i++)
+        {
+            var plain = await TimeOnceAsync(items, null);
+            var keyedPass = await TimeOnceAsync(items, keys);
+            unkeyed[i] = plain.Milliseconds;
+            keyed[i] = keyedPass.Milliseconds;
+            output.WriteLine(
+                $"pass {i + 1}: unkeyed {plain.Milliseconds:F1} ms ({items.Count * 1000.0 / plain.Milliseconds:F0} chunks/s, saved {plain.Saved}), " +
+                $"keyed {keyedPass.Milliseconds:F1} ms ({items.Count * 1000.0 / keyedPass.Milliseconds:F0} chunks/s, saved {keyedPass.Saved})");
+        }
+
+        var unkeyedMedian = Median(unkeyed);
+        var keyedMedian = Median(keyed);
+        var slower = (keyedMedian - unkeyedMedian) / unkeyedMedian;
+        output.WriteLine();
+        output.WriteLine($"median unkeyed {unkeyedMedian:F1} ms ({items.Count * 1000.0 / unkeyedMedian:F0} chunks/s)");
+        output.WriteLine($"median keyed   {keyedMedian:F1} ms ({items.Count * 1000.0 / keyedMedian:F0} chunks/s)");
+        output.WriteLine($"keyed median compared with unkeyed median: {slower:P1} (negative means the keyed median was faster)");
+    }
+
+    private static async Task<(double Milliseconds, int Saved)> TimeOnceAsync(List<Item> items, IKeyProvider? keys)
+    {
+        var builder = RechunkPipeline.CreateBuilder().UseSimHash().UseMinHash();
+        if (keys is not null)
+        {
+            builder.UseKeyProvider(keys);
+        }
+
+        var pipeline = builder.Build();
+        var started = System.Diagnostics.Stopwatch.StartNew();
+        var saved = 0;
+        for (var start = 0; start < items.Count; start += 500)
+        {
+            var batch = items.Skip(start).Take(500).Select((item, i) => new ChunkInput(start + i, item.Text)).ToList();
+            var report = await pipeline.DeduplicateAsync("synthetic", batch);
+            saved += report.Decisions.Count(d => d.Outcome == DedupOutcome.Duplicate);
+        }
+
+        started.Stop();
+        return (started.Elapsed.TotalMilliseconds, saved);
+    }
+
+    private static double Median(double[] values)
+    {
+        var sorted = values.OrderBy(v => v).ToArray();
+        return sorted[sorted.Length / 2];
+    }
+
     private static List<Item> BuildCorpus(out int vocabularySize)
     {
         var random = new Random(2026);

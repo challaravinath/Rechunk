@@ -173,8 +173,8 @@ public sealed partial class RevisionTracker
         var input = new ChunkInput(0, text, language);
         var matches = await _pipeline.FindStoredAsync(scope, input, mode == TextMatch.Near, ct).ConfigureAwait(false);
         var ids = matches.Select(m => m.Existing).Distinct().ToList();
-        var own = await _pipeline.IdForAsync(input, ct).ConfigureAwait(false);
-        var ownLanguage = LanguageTags.FromId(own);
+        var described = await _pipeline.DescribeAsync(scope, input, ct).ConfigureAwait(false);
+        var own = described.Id;
         var rows = 0;
 
         var result = ids.Count == 0
@@ -182,9 +182,9 @@ public sealed partial class RevisionTracker
             : await EraseIdsWithReceiptOnFailureAsync(scope, ids, sink, actor, reason, ct).ConfigureAwait(false);
 
         // the row of the text itself: it points at the owner, which is the chunk when the text was stored as it is
-        if (LanguageTags.TryParseId(own, out var hash, out _))
+        if (described.Digest is { Length: > 0 } hash)
         {
-            var effective = LanguageTags.ScopeFor(scope, ownLanguage);
+            var effective = LanguageTags.ScopeFor(scope, described.Language);
             foreach (var owner in ids.Prepend(own).Distinct())
             {
                 rows += await _fingerprints.ForgetExactAsync(effective, owner, new ReadOnlyMemory<byte>[] { hash }, ct).ConfigureAwait(false);
@@ -329,9 +329,18 @@ public sealed partial class RevisionTracker
             foreach (var id in unknown)
             {
                 var language = LanguageTags.FromId(id);
+                var effective = LanguageTags.ScopeFor(scope, language);
                 if (LanguageTags.TryParseId(id, out var hash, out _))
                 {
-                    rows += await _fingerprints.ForgetAsync(LanguageTags.ScopeFor(scope, language), id, new ReadOnlyMemory<byte>[] { hash }, ct).ConfigureAwait(false);
+                    rows += await _fingerprints.ForgetAsync(effective, id, new ReadOnlyMemory<byte>[] { hash }, ct).ConfigureAwait(false);
+                }
+                else
+                {
+                    var owned = await _fingerprints.ListOwnedHashesAsync(effective, id, ct).ConfigureAwait(false);
+                    if (owned.Count > 0)
+                    {
+                        rows += await _fingerprints.ForgetAsync(effective, id, owned.Select(h => (ReadOnlyMemory<byte>)h).ToList(), ct).ConfigureAwait(false);
+                    }
                 }
             }
 
@@ -418,7 +427,19 @@ public sealed partial class RevisionTracker
         var rows = 0;
         foreach (var entry in old.Where(e => e.Id != e.Target && !newIds.Contains(e.Id.Value)))
         {
-            if (!LanguageTags.TryParseId(entry.Id, out var hash, out var language))
+            var language = entry.Language ?? LanguageTags.FromId(entry.Id);
+            var effective = LanguageTags.ScopeFor(scope, language);
+            byte[]? hash;
+            if (LanguageTags.TryParseId(entry.Id, out var parsed, out _))
+            {
+                hash = parsed;
+            }
+            else
+            {
+                hash = await _fingerprints.FindHashByTextIdAsync(effective, entry.Id, ct).ConfigureAwait(false);
+            }
+
+            if (hash is null)
             {
                 continue;
             }
@@ -439,7 +460,7 @@ public sealed partial class RevisionTracker
                 continue;
             }
 
-            rows += await _fingerprints.ForgetExactAsync(LanguageTags.ScopeFor(scope, language), entry.Target, new ReadOnlyMemory<byte>[] { hash }, ct)
+            rows += await _fingerprints.ForgetExactAsync(effective, entry.Target, new ReadOnlyMemory<byte>[] { hash }, ct)
                 .ConfigureAwait(false);
         }
 

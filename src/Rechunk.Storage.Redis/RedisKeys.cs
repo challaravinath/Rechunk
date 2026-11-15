@@ -11,6 +11,14 @@ internal sealed class RedisKeys(string prefix)
 {
     public RedisKey Exact(string scope, ReadOnlySpan<byte> hash) => $"{prefix}:{{{Tag(scope)}}}:x:{Convert.ToHexString(hash).ToLowerInvariant()}";
 
+    public RedisKey ScopeVersion(string scope) => $"{prefix}:{{{Tag(scope)}}}:hv";
+
+    public RedisKey TextIds(string scope) => $"{prefix}:{{{Tag(scope)}}}:tid";
+
+    public RedisKey Owned(string scope, string chunk) => $"{prefix}:{{{Tag(scope)}}}:own:{chunk}";
+
+    public string ExactPattern(string scope) => $"{prefix}:{{{Tag(scope)}}}:x:*";
+
     public RedisKey Entry(string scope, BandKind kind, string id) => $"{prefix}:{{{Tag(scope)}}}:e{(int)kind}:{id}";
 
     public RedisKey Band(string scope, BandKind kind, BandKey key) =>

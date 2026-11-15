@@ -93,5 +93,33 @@ public static class LanguageTags
     }
 
     /// <summary>The language that is part of a chunk id, or null for an untagged chunk.</summary>
-    public static string? FromId(ChunkId id) => TryParseId(id, out _, out var language) ? language : null;
+    public static string? FromId(ChunkId id)
+    {
+        var value = id.Value;
+        if (string.IsNullOrEmpty(value))
+        {
+            return null;
+        }
+
+        // k2. + 64 hex characters, then an optional .language. The HMAC is not a digest, so TryParseId stays false.
+        if (value.StartsWith(ChunkIds.Prefix, StringComparison.Ordinal))
+        {
+            const int MacLength = 64;
+            var macEnd = ChunkIds.Prefix.Length + MacLength;
+            if (value.Length < macEnd || value.Length == macEnd)
+            {
+                return null;
+            }
+
+            if (value[macEnd] != IdSeparator)
+            {
+                return null;
+            }
+
+            var tag = value[(macEnd + 1)..];
+            return tag.Length == 0 ? null : tag;
+        }
+
+        return TryParseId(id, out _, out var language) ? language : null;
+    }
 }

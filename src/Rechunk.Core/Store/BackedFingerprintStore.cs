@@ -16,9 +16,10 @@ public class BackedFingerprintStore : IFingerprintStore
         _backend = backend ?? throw new ArgumentNullException(nameof(backend));
         options ??= new RechunkOptions();
         _time = time ?? TimeProvider.System;
+        var bands = options.KeyProvider is null ? null : BandKeys.For(options.KeyProvider);
 
-        _simHash = new BandedSimHashIndex(backend, options.SimHash.MaxHammingDistance);
-        _minHash = new BandedMinHashIndex(backend, options.MinHash);
+        _simHash = new BandedSimHashIndex(backend, options.SimHash.MaxHammingDistance, bands);
+        _minHash = new BandedMinHashIndex(backend, options.MinHash, bands);
         Exact = new StoreExactIndex(this, backend.FindCommittedAsync, backend.RemoveAsync);
     }
 
@@ -100,4 +101,10 @@ public class BackedFingerprintStore : IFingerprintStore
 
         return removed;
     }
+
+    public ValueTask<IReadOnlyList<byte[]>> ListOwnedHashesAsync(string scope, ChunkId owner, CancellationToken ct = default) =>
+        _backend.ListOwnedHashesAsync(scope, owner, ct);
+
+    public ValueTask<byte[]?> FindHashByTextIdAsync(string scope, ChunkId textId, CancellationToken ct = default) =>
+        _backend.FindHashByTextIdAsync(scope, textId, ct);
 }

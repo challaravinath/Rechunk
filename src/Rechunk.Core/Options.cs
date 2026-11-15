@@ -27,6 +27,12 @@ public sealed class RechunkOptions
     /// <summary>Retries and the outbox for audit writes.</summary>
     public AuditOptions Audit { get; } = new();
 
+    /// <summary>
+    /// When set, chunk ids are HMAC ids under this provider and fingerprint rows record hash version 2.
+    /// When null, ids and rows stay the 0.1 form. The provider is not created here and no key is stored in these options.
+    /// </summary>
+    public IKeyProvider? KeyProvider { get; set; }
+
     public DuplicatePolicy OnDuplicate { get; set; } = DuplicatePolicy.Alias;
 
     public RevisionPolicy OnRevision { get; set; } = RevisionPolicy.ReEmbedChanged;

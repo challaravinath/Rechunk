@@ -66,6 +66,13 @@ public sealed class RechunkPipelineBuilder
         return this;
     }
 
+    /// <summary>HMAC chunk ids for this provider. The pipeline does not create keys. Load a scope with the provider before use.</summary>
+    public RechunkPipelineBuilder UseKeyProvider(IKeyProvider provider)
+    {
+        _options.KeyProvider = provider ?? throw new ArgumentNullException(nameof(provider));
+        return this;
+    }
+
     public RechunkPipelineBuilder UseDefaultScope(string scope)
     {
         _options.DefaultScope = scope;

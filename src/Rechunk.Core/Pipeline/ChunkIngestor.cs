@@ -202,7 +202,10 @@ public sealed class ChunkIngestor
                 await Pause(attempt, ct).ConfigureAwait(false);
                 report = await _pipeline.DeduplicateAsync(scope, request.Chunks, new DedupClaimOptions(holder, null, request.NearExclude), ct).ConfigureAwait(false);
             }
-            catch (Exception ex) when (!IsCancelled(ex, ct))
+            catch (Exception ex) when (!IsCancelled(ex, ct)
+                && ex is not KeyUnavailableException
+                && ex is not MixedHashVersionException
+                && ex is not System.Security.Cryptography.CryptographicException)
             {
                 failure = ex;
                 _logger.LogWarning("Dedup failed for {Count} chunks in {Scope}, attempt {Attempt} of {Max}: {Error}",
@@ -295,8 +298,7 @@ public sealed class ChunkIngestor
             ChunkInput stored = chunk;
             if (safe)
             {
-                var plain = _pipeline.IdFor(chunk.Text);
-                id = language is null ? plain : new ChunkId(plain.Value + LanguageTags.IdSeparator + language);
+                id = _pipeline.IdFor(scope, chunk.Text, language);
             }
             else
             {

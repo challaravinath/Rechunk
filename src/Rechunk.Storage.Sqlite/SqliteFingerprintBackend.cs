@@ -31,18 +31,25 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
     {
         ArgumentNullException.ThrowIfNull(request);
         ct.ThrowIfCancellationRequested();
+        request.CheckVersions();
         var until = now + request.Lease;
 
         var result = _db.InTransaction(connection =>
         {
+            EnsureScope(connection, request);
             var row = ReadRow(connection, request.Scope, request.ExactHash.Span);
             if (row is null)
             {
-                Write(connection, "INSERT", request.Scope, request.ExactHash.Span, request.Id.Value, false, request.Holder, until);
+                Write(connection, "INSERT", request.Scope, request.ExactHash.Span, request.Id.Value, false, request.Holder, until, request.HashVersion, request.KeyVersion, request.Id.Value);
                 return new ClaimResult(ClaimStatus.Claimed, request.Id, until);
             }
 
             var current = row.Value;
+            if (current.HashVersion != request.HashVersion || current.KeyVersion != request.KeyVersion)
+            {
+                throw new MixedHashVersionException(request.Scope, current.HashVersion, current.KeyVersion, request.HashVersion, request.KeyVersion);
+            }
+
             if (current.Committed)
             {
                 return new ClaimResult(ClaimStatus.AlreadyCommitted, new ChunkId(current.Chunk));
@@ -50,13 +57,13 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
 
             if (current.Holder == request.Holder && current.Chunk == request.Id.Value)
             {
-                Write(connection, "UPDATE", request.Scope, request.ExactHash.Span, request.Id.Value, false, request.Holder, until);
+                Write(connection, "UPDATE", request.Scope, request.ExactHash.Span, request.Id.Value, false, request.Holder, until, request.HashVersion, request.KeyVersion, request.Id.Value);
                 return new ClaimResult(ClaimStatus.Renewed, request.Id, until);
             }
 
             if (current.LeaseUntil <= now.UtcTicks)
             {
-                Write(connection, "UPDATE", request.Scope, request.ExactHash.Span, request.Id.Value, false, request.Holder, until);
+                Write(connection, "UPDATE", request.Scope, request.ExactHash.Span, request.Id.Value, false, request.Holder, until, request.HashVersion, request.KeyVersion, request.Id.Value);
                 return new ClaimResult(ClaimStatus.TakenOver, request.Id, until);
             }
 
@@ -88,7 +95,7 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
 
             if (current.Holder == request.Holder && current.Chunk == request.Id.Value)
             {
-                Write(connection, "UPDATE", request.Scope, request.ExactHash.Span, owner, true, string.Empty, default);
+                Write(connection, "UPDATE", request.Scope, request.ExactHash.Span, owner, true, string.Empty, default, current.HashVersion, current.KeyVersion, current.TextId);
                 return CommitStatus.Committed;
             }
 
@@ -148,6 +155,35 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
         command.Parameters.AddWithValue("$hash", exactHash.ToArray());
         command.Parameters.AddWithValue("$chunk", owner.Value);
         return ValueTask.FromResult(command.ExecuteNonQuery() > 0);
+    }
+
+    public ValueTask<IReadOnlyList<byte[]>> ListOwnedHashesAsync(string scope, ChunkId owner, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using var connection = _db.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT hash FROM rechunk_exact WHERE scope = $scope AND chunk = $chunk AND committed = 1";
+        command.Parameters.AddWithValue("$scope", scope);
+        command.Parameters.AddWithValue("$chunk", owner.Value);
+        var hashes = new List<byte[]>();
+        using var reader = command.ExecuteReader();
+        while (reader.Read())
+        {
+            hashes.Add((byte[])reader[0]);
+        }
+
+        return ValueTask.FromResult<IReadOnlyList<byte[]>>(hashes);
+    }
+
+    public ValueTask<byte[]?> FindHashByTextIdAsync(string scope, ChunkId textId, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        using var connection = _db.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT hash FROM rechunk_exact WHERE scope = $scope AND text_id = $text AND text_id <> ''";
+        command.Parameters.AddWithValue("$scope", scope);
+        command.Parameters.AddWithValue("$text", textId.Value);
+        return ValueTask.FromResult(command.ExecuteScalar() as byte[]);
     }
 
     public ValueTask PutAsync(
@@ -267,33 +303,106 @@ public sealed class SqliteFingerprintBackend : IFingerprintBackend
         return ValueTask.FromResult(entries);
     }
 
-    private readonly record struct Row(string Chunk, bool Committed, string Holder, long LeaseUntil);
+    private readonly record struct Row(string Chunk, bool Committed, string Holder, long LeaseUntil, int HashVersion, int KeyVersion, string TextId);
+
+    private static void EnsureScope(SqliteConnection connection, ClaimRequest request)
+    {
+        using var read = connection.CreateCommand();
+        read.CommandText = "SELECT hash_version, key_version FROM rechunk_scope_hash WHERE scope = $scope";
+        read.Parameters.AddWithValue("$scope", request.Scope);
+        using (var reader = read.ExecuteReader())
+        {
+            if (reader.Read())
+            {
+                var hashVersion = reader.GetInt32(0);
+                var keyVersion = reader.GetInt32(1);
+                if (hashVersion != request.HashVersion || keyVersion != request.KeyVersion)
+                {
+                    throw new MixedHashVersionException(request.Scope, hashVersion, keyVersion, request.HashVersion, request.KeyVersion);
+                }
+
+                return;
+            }
+        }
+
+        using var any = connection.CreateCommand();
+        any.CommandText = "SELECT hash_version, key_version FROM rechunk_exact WHERE scope = $scope LIMIT 1";
+        any.Parameters.AddWithValue("$scope", request.Scope);
+        using (var reader = any.ExecuteReader())
+        {
+            if (reader.Read())
+            {
+                var hashVersion = reader.GetInt32(0);
+                var keyVersion = reader.GetInt32(1);
+                if (hashVersion != request.HashVersion || keyVersion != request.KeyVersion)
+                {
+                    throw new MixedHashVersionException(request.Scope, hashVersion, keyVersion, request.HashVersion, request.KeyVersion);
+                }
+
+                InsertScope(connection, request.Scope, hashVersion, keyVersion);
+                return;
+            }
+        }
+
+        InsertScope(connection, request.Scope, request.HashVersion, request.KeyVersion);
+    }
+
+    private static void InsertScope(SqliteConnection connection, string scope, int hashVersion, int keyVersion)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = "INSERT INTO rechunk_scope_hash (scope, hash_version, key_version) VALUES ($scope, $hash, $key)";
+        command.Parameters.AddWithValue("$scope", scope);
+        command.Parameters.AddWithValue("$hash", hashVersion);
+        command.Parameters.AddWithValue("$key", keyVersion);
+        command.ExecuteNonQuery();
+    }
 
     private static Row? ReadRow(SqliteConnection connection, string scope, ReadOnlySpan<byte> hash)
     {
         using var command = connection.CreateCommand();
-        command.CommandText = "SELECT chunk, committed, holder, lease_until FROM rechunk_exact WHERE scope = $scope AND hash = $hash";
+        command.CommandText = """
+            SELECT chunk, committed, holder, lease_until, hash_version, key_version, text_id
+            FROM rechunk_exact WHERE scope = $scope AND hash = $hash
+            """;
         command.Parameters.AddWithValue("$scope", scope);
         command.Parameters.AddWithValue("$hash", hash.ToArray());
         using var reader = command.ExecuteReader();
         return reader.Read()
-            ? new Row(reader.GetString(0), reader.GetInt64(1) != 0, reader.GetString(2), reader.GetInt64(3))
+            ? new Row(
+                reader.GetString(0),
+                reader.GetInt64(1) != 0,
+                reader.GetString(2),
+                reader.GetInt64(3),
+                reader.GetInt32(4),
+                reader.GetInt32(5),
+                reader.IsDBNull(6) ? string.Empty : reader.GetString(6))
             : null;
     }
 
     private static void Write(
-        SqliteConnection connection, string verb, string scope, ReadOnlySpan<byte> hash, string chunk, bool committed, string holder, DateTimeOffset until)
+        SqliteConnection connection, string verb, string scope, ReadOnlySpan<byte> hash, string chunk, bool committed, string holder, DateTimeOffset until,
+        int hashVersion, int keyVersion, string textId)
     {
         using var command = connection.CreateCommand();
         command.CommandText = verb == "INSERT"
-            ? "INSERT INTO rechunk_exact (scope, hash, chunk, committed, holder, lease_until) VALUES ($scope, $hash, $chunk, $committed, $holder, $lease)"
-            : "UPDATE rechunk_exact SET chunk = $chunk, committed = $committed, holder = $holder, lease_until = $lease WHERE scope = $scope AND hash = $hash";
+            ? """
+              INSERT INTO rechunk_exact (scope, hash, chunk, committed, holder, lease_until, hash_version, key_version, text_id)
+              VALUES ($scope, $hash, $chunk, $committed, $holder, $lease, $hashVersion, $keyVersion, $text)
+              """
+            : """
+              UPDATE rechunk_exact
+              SET chunk = $chunk, committed = $committed, holder = $holder, lease_until = $lease, text_id = $text
+              WHERE scope = $scope AND hash = $hash
+              """;
         command.Parameters.AddWithValue("$scope", scope);
         command.Parameters.AddWithValue("$hash", hash.ToArray());
         command.Parameters.AddWithValue("$chunk", chunk);
         command.Parameters.AddWithValue("$committed", committed ? 1 : 0);
         command.Parameters.AddWithValue("$holder", holder);
         command.Parameters.AddWithValue("$lease", until == default ? 0L : until.UtcTicks);
+        command.Parameters.AddWithValue("$hashVersion", hashVersion);
+        command.Parameters.AddWithValue("$keyVersion", keyVersion);
+        command.Parameters.AddWithValue("$text", textId);
         command.ExecuteNonQuery();
     }
 }

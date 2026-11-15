@@ -11,11 +11,18 @@ public sealed class BandedSimHashIndex : INearDuplicateIndex
 {
     private readonly IBandStorage _storage;
     private readonly SimHashBandLayout _layout;
+    private readonly BandKeyDirectory? _bands;
 
     public BandedSimHashIndex(IBandStorage storage, int maxHammingDistance = 3)
+        : this(storage, maxHammingDistance, null)
+    {
+    }
+
+    internal BandedSimHashIndex(IBandStorage storage, int maxHammingDistance, BandKeyDirectory? bands)
     {
         _storage = storage ?? throw new ArgumentNullException(nameof(storage));
         _layout = new SimHashBandLayout(maxHammingDistance);
+        _bands = bands;
     }
 
     public int MaxHammingDistance => _layout.MaxHammingDistance;
@@ -27,7 +34,7 @@ public sealed class BandedSimHashIndex : INearDuplicateIndex
         BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(8), fingerprint.GuardSignature);
         BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(16), fingerprint.ContentSignature);
         BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(24), fingerprint.IdentifierSignature);
-        return _storage.PutAsync(scope, BandKind.SimHash, id.Value, payload, Keys(fingerprint.SimHash), ct);
+        return _storage.PutAsync(scope, BandKind.SimHash, id.Value, payload, Keys(scope, fingerprint.SimHash), ct);
     }
 
     public async ValueTask RemoveAsync(ChunkId id, string scope, CancellationToken ct = default)
@@ -39,13 +46,13 @@ public sealed class BandedSimHashIndex : INearDuplicateIndex
         }
 
         var simHash = BinaryPrimitives.ReadUInt64LittleEndian(payload);
-        await _storage.DeleteAsync(scope, BandKind.SimHash, id.Value, Keys(simHash), ct).ConfigureAwait(false);
+        await _storage.DeleteAsync(scope, BandKind.SimHash, id.Value, Keys(scope, simHash), ct).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<NearDuplicateMatch>> FindAsync(
         ChunkFingerprint fingerprint, string scope, CancellationToken ct = default)
     {
-        var entries = await _storage.QueryAsync(scope, BandKind.SimHash, Keys(fingerprint.SimHash), ct).ConfigureAwait(false);
+        var entries = await _storage.QueryAsync(scope, BandKind.SimHash, Keys(scope, fingerprint.SimHash), ct).ConfigureAwait(false);
         var found = new List<NearDuplicateMatch>();
 
         foreach (var entry in entries)
@@ -67,12 +74,14 @@ public sealed class BandedSimHashIndex : INearDuplicateIndex
             .ToList();
     }
 
-    private BandKey[] Keys(ulong simHash)
+    private BandKey[] Keys(string scope, ulong simHash)
     {
         var keys = new BandKey[_layout.BandCount];
         for (var band = 0; band < keys.Length; band++)
         {
-            keys[band] = new BandKey(band, _layout.Slice(simHash, band));
+            var raw = _layout.Slice(simHash, band);
+            var stored = _bands is null ? raw : _bands.Protect(scope, BandKind.SimHash, band, raw);
+            keys[band] = new BandKey(band, stored);
         }
 
         return keys;

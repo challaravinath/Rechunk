@@ -24,7 +24,19 @@ internal sealed class SqliteDatabase
             committed    INTEGER NOT NULL,
             holder       TEXT    NOT NULL,
             lease_until  INTEGER NOT NULL,
+            hash_version INTEGER NOT NULL DEFAULT 1,
+            key_version  INTEGER NOT NULL DEFAULT 0,
+            text_id      TEXT    NOT NULL DEFAULT '',
             PRIMARY KEY (scope, hash)
+        ) WITHOUT ROWID;
+
+        CREATE INDEX IF NOT EXISTS ix_rechunk_exact_chunk ON rechunk_exact (scope, chunk);
+        CREATE INDEX IF NOT EXISTS ix_rechunk_exact_text ON rechunk_exact (scope, text_id);
+
+        CREATE TABLE IF NOT EXISTS rechunk_scope_hash (
+            scope        TEXT    NOT NULL PRIMARY KEY,
+            hash_version INTEGER NOT NULL,
+            key_version  INTEGER NOT NULL
         ) WITHOUT ROWID;
 
         CREATE TABLE IF NOT EXISTS rechunk_band_entry (
@@ -166,6 +178,29 @@ internal sealed class SqliteDatabase
             {
                 // another process added it between our check and our change
             }
+        }
+
+        AddColumn(connection, "rechunk_exact", "hash_version", "ALTER TABLE rechunk_exact ADD COLUMN hash_version INTEGER NOT NULL DEFAULT 1;");
+        AddColumn(connection, "rechunk_exact", "key_version", "ALTER TABLE rechunk_exact ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0;");
+        AddColumn(connection, "rechunk_exact", "text_id", "ALTER TABLE rechunk_exact ADD COLUMN text_id TEXT NOT NULL DEFAULT '';");
+        Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_exact_chunk ON rechunk_exact (scope, chunk);");
+        Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_exact_text ON rechunk_exact (scope, text_id);");
+    }
+
+    private static void AddColumn(SqliteConnection connection, string table, string column, string sql)
+    {
+        if (HasColumn(connection, table, column))
+        {
+            return;
+        }
+
+        try
+        {
+            Execute(connection, sql);
+        }
+        catch (SqliteException) when (HasColumn(connection, table, column))
+        {
+            // another process added it between our check and our change
         }
     }
 

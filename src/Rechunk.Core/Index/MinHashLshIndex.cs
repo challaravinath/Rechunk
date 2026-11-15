@@ -17,13 +17,20 @@ namespace Rechunk;
 public sealed class MinHashLshIndex : IMinHashIndex
 {
     private readonly ConcurrentDictionary<string, Shard> _shards = new(StringComparer.Ordinal);
+    private readonly BandKeyDirectory? _bands;
 
     public MinHashLshIndex(MinHashOptions options)
+        : this(options, null)
+    {
+    }
+
+    internal MinHashLshIndex(MinHashOptions options, BandKeyDirectory? bands)
         : this(
             (options ?? throw new ArgumentNullException(nameof(options))).Permutations,
             options.Threshold,
             options.Bands,
-            options.Rows)
+            options.Rows,
+            bands)
     {
     }
 
@@ -33,6 +40,11 @@ public sealed class MinHashLshIndex : IMinHashIndex
     /// and all of them for the estimate.
     /// </summary>
     public MinHashLshIndex(int permutations, double threshold, int? bands = null, int? rows = null)
+        : this(permutations, threshold, bands, rows, null)
+    {
+    }
+
+    internal MinHashLshIndex(int permutations, double threshold, int? bands, int? rows, BandKeyDirectory? bandKeys)
     {
         ArgumentOutOfRangeException.ThrowIfLessThan(permutations, 1);
         if (threshold is <= 0 or > 1)
@@ -54,6 +66,7 @@ public sealed class MinHashLshIndex : IMinHashIndex
         Permutations = permutations;
         Threshold = threshold;
         Lsh = lsh;
+        _bands = bandKeys;
     }
 
     public int Permutations { get; }
@@ -100,13 +113,13 @@ public sealed class MinHashLshIndex : IMinHashIndex
         {
             if (shard.Items.TryGetValue(id, out var old))
             {
-                RemoveFromBuckets(shard, old);
+                RemoveFromBuckets(scope, shard, old);
             }
 
             shard.Items[id] = entry;
             for (var band = 0; band < Bands; band++)
             {
-                var key = BandKey(entry.Signature, band);
+                var key = StoredBand(scope, entry.Signature, band);
                 if (!shard.Tables[band].TryGetValue(key, out var bucket))
                 {
                     bucket = new List<Entry>(2);
@@ -134,7 +147,7 @@ public sealed class MinHashLshIndex : IMinHashIndex
                 return false;
             }
 
-            RemoveFromBuckets(shard, entry);
+            RemoveFromBuckets(scope, shard, entry);
             return true;
         }
     }
@@ -160,7 +173,7 @@ public sealed class MinHashLshIndex : IMinHashIndex
         {
             for (var band = 0; band < Bands; band++)
             {
-                if (!shard.Tables[band].TryGetValue(BandKey(signature, band), out var bucket))
+                if (!shard.Tables[band].TryGetValue(StoredBand(scope, signature, band), out var bucket))
                 {
                     continue;
                 }
@@ -263,13 +276,17 @@ public sealed class MinHashLshIndex : IMinHashIndex
         }
     }
 
-    private ulong BandKey(ReadOnlySpan<uint> signature, int band) => Lsh.BandKey(signature, band);
+    private ulong StoredBand(string scope, ReadOnlySpan<uint> signature, int band)
+    {
+        var raw = Lsh.BandKey(signature, band);
+        return _bands is null ? raw : _bands.Protect(scope, BandKind.MinHash, band, raw);
+    }
 
-    private void RemoveFromBuckets(Shard shard, Entry entry)
+    private void RemoveFromBuckets(string scope, Shard shard, Entry entry)
     {
         for (var band = 0; band < Bands; band++)
         {
-            var key = BandKey(entry.Signature, band);
+            var key = StoredBand(scope, entry.Signature, band);
             if (!shard.Tables[band].TryGetValue(key, out var bucket))
             {
                 continue;

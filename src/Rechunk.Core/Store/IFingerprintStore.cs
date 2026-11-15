@@ -77,6 +77,12 @@ public interface IFingerprintStore
 
         return removed;
     }
+
+    /// <summary>Committed hashes whose stored chunk is this owner. Empty when the id is unknown. Used when the chunk id is not the digest.</summary>
+    ValueTask<IReadOnlyList<byte[]>> ListOwnedHashesAsync(string scope, ChunkId owner, CancellationToken ct = default);
+
+    /// <summary>The digest stored for this text id, or null when there is none.</summary>
+    ValueTask<byte[]?> FindHashByTextIdAsync(string scope, ChunkId textId, CancellationToken ct = default);
 }
 
 /// <summary>Ask for a hash. Holder is whatever names one piece of work, for example the queue message id.</summary>
@@ -85,7 +91,41 @@ public sealed record ClaimRequest(
     ChunkId Id,
     ReadOnlyMemory<byte> ExactHash,
     string Holder,
-    TimeSpan Lease);
+    TimeSpan Lease)
+{
+    /// <summary>1 is the unkeyed digest id. 2 is the HMAC id. Existing callers leave this at 1.</summary>
+    public int HashVersion { get; init; } = ChunkIds.LegacyHashVersion;
+
+    /// <summary>0 when no scope key is in use. Otherwise the version of the scope key that made the id.</summary>
+    public int KeyVersion { get; init; }
+
+    /// <summary>Throws when the id and the versions do not describe the same kind of row.</summary>
+    public void CheckVersions()
+    {
+        var keyed = ChunkIds.IsKeyed(Id);
+        if (HashVersion == ChunkIds.HmacHashVersion)
+        {
+            if (!keyed || KeyVersion < 1)
+            {
+                throw new ArgumentException("A keyed fingerprint needs a keyed id and a key version of 1 or more.");
+            }
+
+            return;
+        }
+
+        if (HashVersion == ChunkIds.LegacyHashVersion)
+        {
+            if (keyed || KeyVersion != 0)
+            {
+                throw new ArgumentException("A legacy fingerprint needs an unkeyed id and key version 0.");
+            }
+
+            return;
+        }
+
+        throw new ArgumentException("This hash version is not supported.");
+    }
+}
 
 public enum ClaimStatus
 {

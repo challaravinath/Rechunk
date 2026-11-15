@@ -13,23 +13,80 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
 {
     // Replies: status code, owner, lease end in unix ms. The codes are the ClaimStatus values.
     private const string ClaimScript = """
-        local row = redis.call('HMGET', KEYS[1], 'chunk', 'committed', 'holder', 'lease')
+        local hv = ARGV[5]
+        local kv = ARGV[6]
+        local ver = redis.call('HMGET', KEYS[2], 'hv', 'kv')
+        if ver[1] then
+          if ver[1] ~= hv or ver[2] ~= kv then
+            return {5, '', '0', ver[1], ver[2]}
+          end
+        else
+          local exists = redis.call('EXISTS', KEYS[1])
+          if exists == 1 then
+            local rowv = redis.call('HMGET', KEYS[1], 'hv', 'kv')
+            local sh = rowv[1] or '1'
+            local sk = rowv[2] or '0'
+            if sh ~= hv or sk ~= kv then
+              return {5, '', '0', sh, sk}
+            end
+            redis.call('HSET', KEYS[2], 'hv', sh, 'kv', sk)
+          else
+            local cursor = '0'
+            local other = nil
+            local steps = 0
+            repeat
+              local scan = redis.call('SCAN', cursor, 'MATCH', ARGV[8], 'COUNT', 200)
+              cursor = scan[1]
+              local batch = scan[2]
+              for i = 1, #batch do
+                other = batch[i]
+                break
+              end
+              steps = steps + 1
+            until other or cursor == '0' or steps > 10000
+            if not other and cursor ~= '0' then
+              return {6, '', '0', '', ''}
+            end
+            if other then
+              local oh = redis.call('HGET', other, 'hv') or '1'
+              local okv = redis.call('HGET', other, 'kv') or '0'
+              if oh ~= hv or okv ~= kv then
+                return {5, '', '0', oh, okv}
+              end
+              redis.call('HSET', KEYS[2], 'hv', oh, 'kv', okv)
+            else
+              redis.call('HSET', KEYS[2], 'hv', hv, 'kv', kv)
+            end
+          end
+        end
+        local row = redis.call('HMGET', KEYS[1], 'chunk', 'committed', 'holder', 'lease', 'text')
         if not row[1] then
-          redis.call('HSET', KEYS[1], 'chunk', ARGV[1], 'committed', '0', 'holder', ARGV[2], 'lease', ARGV[3])
-          return {0, ARGV[1], ARGV[3]}
+          redis.call('HSET', KEYS[1], 'chunk', ARGV[1], 'committed', '0', 'holder', ARGV[2], 'lease', ARGV[3], 'hv', hv, 'kv', kv, 'text', ARGV[1])
+          redis.call('HSET', KEYS[3], ARGV[1], ARGV[7])
+          return {0, ARGV[1], ARGV[3], hv, kv}
+        end
+        local rh = redis.call('HGET', KEYS[1], 'hv') or '1'
+        local rk = redis.call('HGET', KEYS[1], 'kv') or '0'
+        if rh ~= hv or rk ~= kv then
+          return {5, '', '0', rh, rk}
         end
         if row[2] == '1' then
-          return {3, row[1], '0'}
+          return {3, row[1], '0', hv, kv}
         end
         if row[3] == ARGV[2] and row[1] == ARGV[1] then
           redis.call('HSET', KEYS[1], 'lease', ARGV[3])
-          return {1, ARGV[1], ARGV[3]}
+          redis.call('HSET', KEYS[3], ARGV[1], ARGV[7])
+          return {1, ARGV[1], ARGV[3], hv, kv}
         end
         if tonumber(row[4]) <= tonumber(ARGV[4]) then
-          redis.call('HSET', KEYS[1], 'chunk', ARGV[1], 'holder', ARGV[2], 'lease', ARGV[3])
-          return {2, ARGV[1], ARGV[3]}
+          if row[6] and row[6] ~= ARGV[1] then
+            redis.call('HDEL', KEYS[3], row[6])
+          end
+          redis.call('HSET', KEYS[1], 'chunk', ARGV[1], 'holder', ARGV[2], 'lease', ARGV[3], 'hv', hv, 'kv', kv, 'text', ARGV[1])
+          redis.call('HSET', KEYS[3], ARGV[1], ARGV[7])
+          return {2, ARGV[1], ARGV[3], hv, kv}
         end
-        return {4, row[1], row[4]}
+        return {4, row[1], row[4], hv, kv}
         """;
 
     // Replies with the CommitStatus values: 0 committed, 1 already committed, 2 not held.
@@ -39,19 +96,25 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
           return 2
         end
         if row[2] == '1' then
-          if row[1] == ARGV[3] then return 1 end
+          if row[1] == ARGV[3] then
+            redis.call('SADD', KEYS[2], ARGV[4])
+            return 1
+          end
           return 2
         end
         if row[3] == ARGV[2] and row[1] == ARGV[1] then
           redis.call('HSET', KEYS[1], 'chunk', ARGV[3], 'committed', '1', 'holder', '', 'lease', '0')
+          redis.call('SADD', KEYS[2], ARGV[4])
           return 0
         end
         return 2
         """;
 
     private const string RemoveOwnedScript = """
-        local row = redis.call('HMGET', KEYS[1], 'chunk', 'committed')
+        local row = redis.call('HMGET', KEYS[1], 'chunk', 'committed', 'text')
         if row[1] and row[2] == '1' and row[1] == ARGV[1] then
+          if row[3] then redis.call('HDEL', KEYS[2], row[3]) end
+          redis.call('SREM', KEYS[3], ARGV[2])
           redis.call('DEL', KEYS[1])
           return 1
         end
@@ -59,12 +122,25 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
         """;
 
     private const string ReleaseScript = """
-        local row = redis.call('HMGET', KEYS[1], 'chunk', 'committed', 'holder')
+        local row = redis.call('HMGET', KEYS[1], 'chunk', 'committed', 'holder', 'text')
         if row[1] and row[2] ~= '1' and row[3] == ARGV[2] and row[1] == ARGV[1] then
+          if row[4] then redis.call('HDEL', KEYS[2], row[4]) end
           redis.call('DEL', KEYS[1])
           return 1
         end
         return 0
+        """;
+
+    private const string RemoveAnyScript = """
+        if redis.call('EXISTS', KEYS[1]) == 0 then
+          return 0
+        end
+        if ARGV[1] ~= '' then
+          redis.call('HDEL', KEYS[2], ARGV[1])
+        end
+        redis.call('SREM', KEYS[3], ARGV[2])
+        redis.call('DEL', KEYS[1])
+        return 1
         """;
 
     private const string PutScript = """
@@ -102,13 +178,31 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
         ArgumentNullException.ThrowIfNull(request);
         ct.ThrowIfCancellationRequested();
 
+        request.CheckVersions();
         var until = (now + request.Lease).ToUnixTimeMilliseconds();
+        var hashHex = Convert.ToHexString(request.ExactHash.Span).ToLowerInvariant();
         var reply = (RedisResult[])(await Db.ScriptEvaluateAsync(
             ClaimScript,
-            [_keys.Exact(request.Scope, request.ExactHash.Span)],
-            [request.Id.Value, request.Holder, until, now.ToUnixTimeMilliseconds()]).ConfigureAwait(false))!;
+            [_keys.Exact(request.Scope, request.ExactHash.Span), _keys.ScopeVersion(request.Scope), _keys.TextIds(request.Scope)],
+            [request.Id.Value, request.Holder, until, now.ToUnixTimeMilliseconds(), request.HashVersion, request.KeyVersion, hashHex, _keys.ExactPattern(request.Scope)]).ConfigureAwait(false))!;
 
-        var status = (ClaimStatus)(int)reply[0];
+        var code = (int)reply[0];
+        if (code == 5)
+        {
+            throw new MixedHashVersionException(
+                request.Scope,
+                int.Parse((string)reply[3]!, System.Globalization.CultureInfo.InvariantCulture),
+                int.Parse((string)reply[4]!, System.Globalization.CultureInfo.InvariantCulture),
+                request.HashVersion,
+                request.KeyVersion);
+        }
+
+        if (code == 6)
+        {
+            throw new InvalidOperationException("Could not confirm the hash version already stored for scope '" + request.Scope + "'.");
+        }
+
+        var status = (ClaimStatus)code;
         var owner = new ChunkId((string)reply[1]!);
         DateTimeOffset? leaseUntil = status == ClaimStatus.AlreadyCommitted
             ? null
@@ -122,10 +216,11 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
         ct.ThrowIfCancellationRequested();
 
         var owner = (request.AliasOf ?? request.Id).Value;
+        var hashHex = Convert.ToHexString(request.ExactHash.Span).ToLowerInvariant();
         var reply = await Db.ScriptEvaluateAsync(
             CommitScript,
-            [_keys.Exact(request.Scope, request.ExactHash.Span)],
-            [request.Id.Value, request.Holder, owner]).ConfigureAwait(false);
+            [_keys.Exact(request.Scope, request.ExactHash.Span), _keys.Owned(request.Scope, owner)],
+            [request.Id.Value, request.Holder, owner, hashHex]).ConfigureAwait(false);
         return (CommitStatus)(int)reply;
     }
 
@@ -136,7 +231,7 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
 
         var reply = await Db.ScriptEvaluateAsync(
             ReleaseScript,
-            [_keys.Exact(request.Scope, request.ExactHash.Span)],
+            [_keys.Exact(request.Scope, request.ExactHash.Span), _keys.TextIds(request.Scope)],
             [request.Id.Value, request.Holder]).ConfigureAwait(false);
         return (int)reply == 1;
     }
@@ -151,15 +246,54 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
     public async ValueTask<bool> RemoveAsync(string scope, ReadOnlyMemory<byte> exactHash, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
-        return await Db.KeyDeleteAsync(_keys.Exact(scope, exactHash.Span)).ConfigureAwait(false);
+        var exact = _keys.Exact(scope, exactHash.Span);
+        var row = await Db.HashGetAsync(exact, ["chunk", "text"]).ConfigureAwait(false);
+        if (!row[0].HasValue)
+        {
+            return false;
+        }
+
+        var chunk = (string)row[0]!;
+        var hashHex = Convert.ToHexString(exactHash.Span).ToLowerInvariant();
+        var reply = await Db.ScriptEvaluateAsync(
+            RemoveAnyScript,
+            [exact, _keys.TextIds(scope), _keys.Owned(scope, chunk)],
+            [row[1].HasValue ? (string)row[1]! : string.Empty, hashHex]).ConfigureAwait(false);
+        return (int)reply == 1;
     }
 
     public async ValueTask<bool> RemoveOwnedAsync(string scope, ReadOnlyMemory<byte> exactHash, ChunkId owner, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        var hashHex = Convert.ToHexString(exactHash.Span).ToLowerInvariant();
         var reply = await Db.ScriptEvaluateAsync(
-            RemoveOwnedScript, [_keys.Exact(scope, exactHash.Span)], [owner.Value]).ConfigureAwait(false);
+            RemoveOwnedScript,
+            [_keys.Exact(scope, exactHash.Span), _keys.TextIds(scope), _keys.Owned(scope, owner.Value)],
+            [owner.Value, hashHex]).ConfigureAwait(false);
         return (int)reply == 1;
+    }
+
+    public async ValueTask<IReadOnlyList<byte[]>> ListOwnedHashesAsync(string scope, ChunkId owner, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var members = await Db.SetMembersAsync(_keys.Owned(scope, owner.Value)).ConfigureAwait(false);
+        var hashes = new List<byte[]>(members.Length);
+        foreach (var member in members)
+        {
+            if (member.HasValue)
+            {
+                hashes.Add(Convert.FromHexString((string)member!));
+            }
+        }
+
+        return hashes;
+    }
+
+    public async ValueTask<byte[]?> FindHashByTextIdAsync(string scope, ChunkId textId, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        var hex = await Db.HashGetAsync(_keys.TextIds(scope), textId.Value).ConfigureAwait(false);
+        return hex.HasValue ? Convert.FromHexString((string)hex!) : null;
     }
 
     public async ValueTask PutAsync(
