@@ -185,7 +185,7 @@ Erasing does not touch your source documents, the chunker's output, or the embed
 
 ## Status
 
-Version 0.1.0 is the first set of packages. They are not on NuGet until a release tag is published, and the API can still change.
+Version 0.2.0 is the current set of packages. They are published when the v0.2.0 tag is pushed. The API can still change before 1.0. Keyed ids are in [keyed-ids.md](keyed-ids.md).
 
 What works today:
 

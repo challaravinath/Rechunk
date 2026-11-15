@@ -28,16 +28,13 @@ There are good tools to load data into AI memory, and good tools to run deletion
 ### 0.1.0
 Exact, SimHash and MinHash dedup before embedding, revision tracking, a shared store on SQLite or Redis with leases and dead letters, PII scanning with flag, mask and block, an audit trail and erasure with receipts. See CHANGELOG.md.
 
+### 0.2.0
+Keyed chunk ids when a provider is set, wrapped scope keys in SQLite, an opt-in migration from 0.1 stores, encrypted SimHash and MinHash payloads in SQLite and Redis, and a threat model page. Stores with no provider stay as they were in 0.1. See CHANGELOG.md.
+
 ## Planned
 
-### 0.2.0 Keyed ids
-- Chunk ids, fingerprints and band keys become keyed hashes with one key per scope, so the store, the vector keys and the audit log cannot confirm a guessed text.
-- Near copy signatures are encrypted at rest.
-- Pluggable key providers, with the shredding guarantee stated for each one.
-- Opt in, resumable migration for 0.1 stores and vectors.
-- A threat model page.
-
-This changes every chunk id, so it is a breaking change with migration steps.
+### 0.2.1 Key Vault
+- A key provider that keeps the wrapping key in Key Vault. The local wrapped provider stays for callers who hold the key themselves.
 
 ### 0.3.0 Erase by person
 - A subject index that links chunks to the people they are about, stored as keyed ids.
