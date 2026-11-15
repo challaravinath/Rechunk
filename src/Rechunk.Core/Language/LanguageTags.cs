@@ -8,7 +8,7 @@ namespace Rechunk;
 public static class LanguageTags
 {
     /// <summary>Separates the scope from the language in the scope the stores see. A control character, so no real scope has it.</summary>
-    internal const char ScopeSeparator = '\u001F';
+    internal const char ScopeSeparator = StoreScopes.LanguageSeparator;
 
     /// <summary>Separates the hash from the language in a chunk id.</summary>
     internal const char IdSeparator = '.';

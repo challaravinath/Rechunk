@@ -9,10 +9,13 @@ namespace Rechunk.Storage.Redis;
 /// Times (the lease) are written as milliseconds from the clock of the worker that claims, so the workers should
 /// have clocks that agree to within a good bit less than the lease.
 /// </summary>
-public sealed class RedisFingerprintBackend : IFingerprintBackend
+public sealed class RedisFingerprintBackend : IFingerprintBackend, IMigratableFingerprints
 {
     // Replies: status code, owner, lease end in unix ms. The codes are the ClaimStatus values.
     private const string ClaimScript = """
+        if redis.call('HGET', KEYS[2], 'migrating') == '1' then
+          return {7, '', '0', '', ''}
+        end
         local hv = ARGV[5]
         local kv = ARGV[6]
         local ver = redis.call('HMGET', KEYS[2], 'hv', 'kv')
@@ -162,6 +165,7 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
     private readonly IConnectionMultiplexer _redis;
     private readonly int _database;
     private readonly RedisKeys _keys;
+    private readonly RedisKeyedMigration _migration;
 
     public RedisFingerprintBackend(IConnectionMultiplexer redis, RedisStorageOptions? options = null)
     {
@@ -169,6 +173,7 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
         options ??= new RedisStorageOptions();
         _database = options.Database;
         _keys = new RedisKeys(options.KeyPrefix);
+        _migration = new RedisKeyedMigration(_redis, _database, _keys);
     }
 
     private IDatabase Db => _redis.GetDatabase(_database);
@@ -202,6 +207,11 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
             throw new InvalidOperationException("Could not confirm the hash version already stored for scope '" + request.Scope + "'.");
         }
 
+        if (code == 7)
+        {
+            throw new MigrationInProgressException(request.Scope);
+        }
+
         var status = (ClaimStatus)code;
         var owner = new ChunkId((string)reply[1]!);
         DateTimeOffset? leaseUntil = status == ClaimStatus.AlreadyCommitted
@@ -214,6 +224,7 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
     {
         ArgumentNullException.ThrowIfNull(request);
         ct.ThrowIfCancellationRequested();
+        await RedisKeyedMigration.ThrowIfBusyAsync(Db, _keys, request.Scope).ConfigureAwait(false);
 
         var owner = (request.AliasOf ?? request.Id).Value;
         var hashHex = Convert.ToHexString(request.ExactHash.Span).ToLowerInvariant();
@@ -228,6 +239,7 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
     {
         ArgumentNullException.ThrowIfNull(request);
         ct.ThrowIfCancellationRequested();
+        await RedisKeyedMigration.ThrowIfBusyAsync(Db, _keys, request.Scope).ConfigureAwait(false);
 
         var reply = await Db.ScriptEvaluateAsync(
             ReleaseScript,
@@ -246,6 +258,7 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
     public async ValueTask<bool> RemoveAsync(string scope, ReadOnlyMemory<byte> exactHash, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        await RedisKeyedMigration.ThrowIfBusyAsync(Db, _keys, scope).ConfigureAwait(false);
         var exact = _keys.Exact(scope, exactHash.Span);
         var row = await Db.HashGetAsync(exact, ["chunk", "text"]).ConfigureAwait(false);
         if (!row[0].HasValue)
@@ -265,6 +278,7 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
     public async ValueTask<bool> RemoveOwnedAsync(string scope, ReadOnlyMemory<byte> exactHash, ChunkId owner, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        await RedisKeyedMigration.ThrowIfBusyAsync(Db, _keys, scope).ConfigureAwait(false);
         var hashHex = Convert.ToHexString(exactHash.Span).ToLowerInvariant();
         var reply = await Db.ScriptEvaluateAsync(
             RemoveOwnedScript,
@@ -300,6 +314,7 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
         string scope, BandKind kind, string id, byte[] payload, IReadOnlyList<BandKey> keys, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        await RedisKeyedMigration.ThrowIfBusyAsync(Db, _keys, scope).ConfigureAwait(false);
         var all = new RedisKey[keys.Count + 1];
         all[0] = _keys.Entry(scope, kind, id);
         for (var i = 0; i < keys.Count; i++)
@@ -314,6 +329,7 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
         string scope, BandKind kind, string id, IReadOnlyList<BandKey> keys, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
+        await RedisKeyedMigration.ThrowIfBusyAsync(Db, _keys, scope).ConfigureAwait(false);
         var all = new RedisKey[keys.Count + 1];
         all[0] = _keys.Entry(scope, kind, id);
         for (var i = 0; i < keys.Count; i++)
@@ -364,4 +380,18 @@ public sealed class RedisFingerprintBackend : IFingerprintBackend
 
         return found;
     }
+
+    public ValueTask<MigrationPreview> PreviewAsync(string userScope, ScopeKey key, RechunkOptions options, CancellationToken ct = default) =>
+        _migration.PreviewAsync(userScope, key, options, ct);
+
+    public ValueTask BeginAsync(string userScope, CancellationToken ct = default) => _migration.BeginAsync(userScope, ct);
+
+    public ValueTask<FingerprintMove> MoveNextAsync(string userScope, ScopeKey key, RechunkOptions options, CancellationToken ct = default) =>
+        _migration.MoveNextAsync(userScope, key, options, ct);
+
+    public ValueTask<IReadOnlyDictionary<string, string>> ReadMapAsync(string userScope, CancellationToken ct = default) =>
+        _migration.ReadMapAsync(userScope, ct);
+
+    public ValueTask CompleteAsync(string userScope, int keyVersion, CancellationToken ct = default) =>
+        _migration.CompleteAsync(userScope, keyVersion, ct);
 }

@@ -4,7 +4,7 @@ namespace Rechunk;
 /// A shared store built on a backend (SQLite, Redis or your own). The exact hash rows and the band storage live
 /// in the backend. The SimHash and MinHash logic runs here, so every backend behaves the same way.
 /// </summary>
-public class BackedFingerprintStore : IFingerprintStore
+public class BackedFingerprintStore : IFingerprintStore, IMigratableFingerprints
 {
     private readonly IFingerprintBackend _backend;
     private readonly TimeProvider _time;
@@ -107,4 +107,22 @@ public class BackedFingerprintStore : IFingerprintStore
 
     public ValueTask<byte[]?> FindHashByTextIdAsync(string scope, ChunkId textId, CancellationToken ct = default) =>
         _backend.FindHashByTextIdAsync(scope, textId, ct);
+
+    private IMigratableFingerprints Migration =>
+        _backend as IMigratableFingerprints
+        ?? throw new NotSupportedException("This fingerprint backend cannot migrate keyed ids.");
+
+    public ValueTask<MigrationPreview> PreviewAsync(string userScope, ScopeKey key, RechunkOptions options, CancellationToken ct = default) =>
+        Migration.PreviewAsync(userScope, key, options, ct);
+
+    public ValueTask BeginAsync(string userScope, CancellationToken ct = default) => Migration.BeginAsync(userScope, ct);
+
+    public ValueTask<FingerprintMove> MoveNextAsync(string userScope, ScopeKey key, RechunkOptions options, CancellationToken ct = default) =>
+        Migration.MoveNextAsync(userScope, key, options, ct);
+
+    public ValueTask<IReadOnlyDictionary<string, string>> ReadMapAsync(string userScope, CancellationToken ct = default) =>
+        Migration.ReadMapAsync(userScope, ct);
+
+    public ValueTask CompleteAsync(string userScope, int keyVersion, CancellationToken ct = default) =>
+        Migration.CompleteAsync(userScope, keyVersion, ct);
 }
