@@ -20,10 +20,14 @@ public static class RechunkBuilderExtensions
 
         builder.Services.TryAddSingleton<IConnectionMultiplexer>(_ => ConnectionMultiplexer.Connect(options.Configuration));
         builder.Services.Replace(ServiceDescriptor.Singleton<IFingerprintStore>(sp =>
-            new BackedFingerprintStore(
+        {
+            var rechunk = sp.GetRequiredService<RechunkOptions>();
+            rechunk.KeyProvider ??= sp.GetService<IKeyProvider>();
+            return new BackedFingerprintStore(
                 new RedisFingerprintBackend(sp.GetRequiredService<IConnectionMultiplexer>(), options),
-                sp.GetRequiredService<RechunkOptions>(),
-                sp.GetService<TimeProvider>())));
+                rechunk,
+                sp.GetService<TimeProvider>());
+        }));
         builder.Services.Replace(ServiceDescriptor.Singleton<IDeadLetterStore>(sp =>
             new RedisDeadLetterStore(sp.GetRequiredService<IConnectionMultiplexer>(), options)));
         builder.Services.Replace(ServiceDescriptor.Singleton<IRevisionStore>(sp =>

@@ -151,4 +151,10 @@ public sealed class FlakyStore(IFingerprintStore inner) : IFingerprintStore
     public ValueTask<int> ForgetExactAsync(
         string scope, ChunkId owner, IReadOnlyList<ReadOnlyMemory<byte>> exactHashes, CancellationToken ct = default) =>
         inner.ForgetExactAsync(scope, owner, exactHashes, ct);
+
+    public ValueTask<IReadOnlyList<byte[]>> ListOwnedHashesAsync(string scope, ChunkId owner, CancellationToken ct = default) =>
+        inner.ListOwnedHashesAsync(scope, owner, ct);
+
+    public ValueTask<byte[]?> FindHashByTextIdAsync(string scope, ChunkId textId, CancellationToken ct = default) =>
+        inner.FindHashByTextIdAsync(scope, textId, ct);
 }

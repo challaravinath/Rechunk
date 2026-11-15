@@ -24,13 +24,27 @@ public static class ServiceCollectionExtensions
         services.TryAddSingleton(options);
         services.TryAddSingleton<IChunkFingerprinter>(sp => new ChunkFingerprinter(sp.GetRequiredService<RechunkOptions>()));
         services.TryAddSingleton<IExactHashIndex, InMemoryExactHashIndex>();
-        services.TryAddSingleton(sp => new SimHashBandIndex(sp.GetRequiredService<RechunkOptions>().SimHash.MaxHammingDistance));
-        services.TryAddSingleton(sp => new MinHashLshIndex(sp.GetRequiredService<RechunkOptions>().MinHash));
+        services.TryAddSingleton(sp =>
+        {
+            var options = sp.GetRequiredService<RechunkOptions>();
+            options.KeyProvider ??= sp.GetService<IKeyProvider>();
+            var bands = options.KeyProvider is null ? null : BandKeys.For(options.KeyProvider);
+            return new SimHashBandIndex(options.SimHash.MaxHammingDistance, bands);
+        });
+        services.TryAddSingleton(sp =>
+        {
+            var options = sp.GetRequiredService<RechunkOptions>();
+            options.KeyProvider ??= sp.GetService<IKeyProvider>();
+            var bands = options.KeyProvider is null ? null : BandKeys.For(options.KeyProvider);
+            return new MinHashLshIndex(options.MinHash, bands);
+        });
         services.TryAddSingleton<IDeadLetterStore, InMemoryDeadLetterStore>();
         services.TryAddSingleton(sp =>
         {
             // A fingerprint store that is registered (by a storage package) takes over all three indexes.
             // It is looked up here, not above, so it does not matter which package was added first.
+            var options = sp.GetRequiredService<RechunkOptions>();
+            options.KeyProvider ??= sp.GetService<IKeyProvider>();
             var store = sp.GetService<IFingerprintStore>();
             return new RechunkPipeline(
                 sp.GetRequiredService<RechunkOptions>(),
@@ -78,7 +92,11 @@ public static class ServiceCollectionExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
         builder.Services.TryAddSingleton<IFingerprintStore>(sp =>
-            new InMemoryFingerprintStore(sp.GetRequiredService<RechunkOptions>(), sp.GetService<TimeProvider>()));
+        {
+            var options = sp.GetRequiredService<RechunkOptions>();
+            options.KeyProvider ??= sp.GetService<IKeyProvider>();
+            return new InMemoryFingerprintStore(options, sp.GetService<TimeProvider>(), options.KeyProvider);
+        });
         return builder;
     }
 

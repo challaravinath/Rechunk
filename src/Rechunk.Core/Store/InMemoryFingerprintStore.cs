@@ -9,15 +9,19 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
 {
     private readonly object _gate = new();
     private readonly Dictionary<(string Scope, string Hash), Row> _rows = new();
+    private readonly Dictionary<string, (int Hash, int Key)> _scopeVersions = new(StringComparer.Ordinal);
+    private readonly Dictionary<(string Scope, string TextId), string> _textIds = new();
+    private readonly Dictionary<(string Scope, string Owner), HashSet<string>> _owned = new();
     private readonly TimeProvider _time;
 
-    public InMemoryFingerprintStore(RechunkOptions? options = null, TimeProvider? time = null)
+    public InMemoryFingerprintStore(RechunkOptions? options = null, TimeProvider? time = null, IKeyProvider? keys = null)
     {
         options ??= new RechunkOptions();
         _time = time ?? TimeProvider.System;
+        var bands = (keys ?? options.KeyProvider) is { } provider ? BandKeys.For(provider) : null;
 
-        SimHashIndex = new SimHashBandIndex(options.SimHash.MaxHammingDistance);
-        MinHashIndex = new MinHashLshIndex(options.MinHash);
+        SimHashIndex = new SimHashBandIndex(options.SimHash.MaxHammingDistance, bands);
+        MinHashIndex = new MinHashLshIndex(options.MinHash, bands);
         Exact = new StoreExactIndex(this, FindCommitted, RemoveRow);
     }
 
@@ -36,16 +40,25 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
         ArgumentNullException.ThrowIfNull(request);
         ct.ThrowIfCancellationRequested();
 
+        request.CheckVersions();
         var now = _time.GetUtcNow();
         var until = now + request.Lease;
         var key = Key(request.Scope, request.ExactHash);
+        var hashHex = key.Item2;
 
         lock (_gate)
         {
+            EnsureScope(request.Scope, request.HashVersion, request.KeyVersion);
             if (!_rows.TryGetValue(key, out var row))
             {
-                _rows[key] = new Row(request.Id, false, request.Holder, until);
+                _rows[key] = new Row(request.Id, false, request.Holder, until, request.HashVersion, request.KeyVersion, request.Id.Value);
+                _textIds[(request.Scope, request.Id.Value)] = hashHex;
                 return ValueTask.FromResult(new ClaimResult(ClaimStatus.Claimed, request.Id, until));
+            }
+
+            if (row.HashVersion != request.HashVersion || row.KeyVersion != request.KeyVersion)
+            {
+                throw new MixedHashVersionException(request.Scope, row.HashVersion, row.KeyVersion, request.HashVersion, request.KeyVersion);
             }
 
             if (row.Committed)
@@ -61,7 +74,13 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
 
             if (row.LeaseUntil <= now)
             {
-                _rows[key] = new Row(request.Id, false, request.Holder, until);
+                if (row.TextId != request.Id.Value)
+                {
+                    _textIds.Remove((request.Scope, row.TextId));
+                }
+
+                _rows[key] = new Row(request.Id, false, request.Holder, until, request.HashVersion, request.KeyVersion, request.Id.Value);
+                _textIds[(request.Scope, request.Id.Value)] = hashHex;
                 return ValueTask.FromResult(new ClaimResult(ClaimStatus.TakenOver, request.Id, until));
             }
 
@@ -86,11 +105,20 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
             }
             else if (row.Committed)
             {
-                status = row.Chunk == owner ? CommitStatus.AlreadyCommitted : CommitStatus.NotHeld;
+                if (row.Chunk == owner)
+                {
+                    RememberOwned(request.Scope, owner.Value, key.Item2);
+                    status = CommitStatus.AlreadyCommitted;
+                }
+                else
+                {
+                    status = CommitStatus.NotHeld;
+                }
             }
             else if (row.Holder == request.Holder && row.Chunk == request.Id)
             {
-                _rows[key] = new Row(owner, true, string.Empty, default);
+                _rows[key] = row with { Chunk = owner, Committed = true, Holder = string.Empty, LeaseUntil = default };
+                RememberOwned(request.Scope, owner.Value, key.Item2);
                 status = CommitStatus.Committed;
             }
             else
@@ -131,6 +159,8 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
                 && row.Chunk == request.Id)
             {
                 _rows.Remove(key);
+                _textIds.Remove((request.Scope, row.TextId));
+                ForgetScopeIfEmpty(request.Scope);
                 return ValueTask.FromResult(true);
             }
         }
@@ -154,9 +184,8 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
             foreach (var hash in exactHashes)
             {
                 var key = Key(scope, hash);
-                if (_rows.TryGetValue(key, out var row) && row.Committed && row.Chunk == owner)
+                if (DropOwned(scope, owner, key))
                 {
-                    _rows.Remove(key);
                     removed++;
                 }
             }
@@ -178,15 +207,37 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
             foreach (var hash in exactHashes)
             {
                 var key = Key(scope, hash);
-                if (_rows.TryGetValue(key, out var row) && row.Committed && row.Chunk == owner)
+                if (DropOwned(scope, owner, key))
                 {
-                    _rows.Remove(key);
                     removed++;
                 }
             }
         }
 
         return ValueTask.FromResult(removed);
+    }
+
+    public ValueTask<IReadOnlyList<byte[]>> ListOwnedHashesAsync(string scope, ChunkId owner, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (!_owned.TryGetValue((scope, owner.Value), out var hashes))
+            {
+                return ValueTask.FromResult<IReadOnlyList<byte[]>>(Array.Empty<byte[]>());
+            }
+
+            return ValueTask.FromResult<IReadOnlyList<byte[]>>(hashes.Select(Convert.FromHexString).ToList());
+        }
+    }
+
+    public ValueTask<byte[]?> FindHashByTextIdAsync(string scope, ChunkId textId, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            return ValueTask.FromResult(_textIds.TryGetValue((scope, textId.Value), out var hex) ? Convert.FromHexString(hex) : null);
+        }
     }
 
     private ValueTask<ChunkId?> FindCommitted(string scope, ReadOnlyMemory<byte> hash, CancellationToken ct)
@@ -204,12 +255,99 @@ public sealed class InMemoryFingerprintStore : IFingerprintStore
         ct.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            return ValueTask.FromResult(_rows.Remove(Key(scope, hash)));
+            var key = Key(scope, hash);
+            if (!_rows.TryGetValue(key, out var row))
+            {
+                return ValueTask.FromResult(false);
+            }
+
+            _rows.Remove(key);
+            _textIds.Remove((scope, row.TextId));
+            if (_owned.TryGetValue((scope, row.Chunk.Value), out var set))
+            {
+                set.Remove(key.Item2);
+            }
+
+            ForgetScopeIfEmpty(scope);
+            return ValueTask.FromResult(true);
         }
     }
 
-    private static (string, string) Key(string scope, ReadOnlyMemory<byte> hash) =>
+    private void EnsureScope(string scope, int hashVersion, int keyVersion)
+    {
+        if (_scopeVersions.TryGetValue(scope, out var stored))
+        {
+            if (stored.Hash != hashVersion || stored.Key != keyVersion)
+            {
+                throw new MixedHashVersionException(scope, stored.Hash, stored.Key, hashVersion, keyVersion);
+            }
+
+            return;
+        }
+
+        foreach (var pair in _rows)
+        {
+            if (!string.Equals(pair.Key.Scope, scope, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (pair.Value.HashVersion != hashVersion || pair.Value.KeyVersion != keyVersion)
+            {
+                throw new MixedHashVersionException(scope, pair.Value.HashVersion, pair.Value.KeyVersion, hashVersion, keyVersion);
+            }
+
+            _scopeVersions[scope] = (pair.Value.HashVersion, pair.Value.KeyVersion);
+            return;
+        }
+
+        _scopeVersions[scope] = (hashVersion, keyVersion);
+    }
+
+    private void RememberOwned(string scope, string owner, string hashHex)
+    {
+        if (!_owned.TryGetValue((scope, owner), out var set))
+        {
+            set = new HashSet<string>(StringComparer.Ordinal);
+            _owned[(scope, owner)] = set;
+        }
+
+        set.Add(hashHex);
+    }
+
+    private bool DropOwned(string scope, ChunkId owner, (string Scope, string Hash) key)
+    {
+        if (!_rows.TryGetValue(key, out var row) || !row.Committed || row.Chunk != owner)
+        {
+            return false;
+        }
+
+        _rows.Remove(key);
+        _textIds.Remove((scope, row.TextId));
+        if (_owned.TryGetValue((scope, owner.Value), out var set))
+        {
+            set.Remove(key.Hash);
+        }
+
+        ForgetScopeIfEmpty(scope);
+        return true;
+    }
+
+    private void ForgetScopeIfEmpty(string scope)
+    {
+        foreach (var pair in _rows)
+        {
+            if (string.Equals(pair.Key.Scope, scope, StringComparison.Ordinal))
+            {
+                return;
+            }
+        }
+
+        _scopeVersions.Remove(scope);
+    }
+
+    private static (string Scope, string Hash) Key(string scope, ReadOnlyMemory<byte> hash) =>
         (scope, Convert.ToHexString(hash.Span));
 
-    private sealed record Row(ChunkId Chunk, bool Committed, string Holder, DateTimeOffset LeaseUntil);
+    private sealed record Row(ChunkId Chunk, bool Committed, string Holder, DateTimeOffset LeaseUntil, int HashVersion, int KeyVersion, string TextId);
 }

@@ -7,11 +7,14 @@ All notable changes to Rechunk are listed here.
 ### Keyed chunk ids
 Chunk ids and fingerprints are built with a secret key per scope, so a stored id can no longer be matched against a guessed text. Destroying a scope's key makes everything stored for that scope unreadable. This changes every chunk id, so existing stores need the migration step that ships with this release.
 
+### Keyed ids on the write path
+When a key provider is set, chunk ids written by the pipeline are HMAC ids, and fingerprint rows in memory, SQLite and Redis record hash version 2 and the key version. Exact and near duplicate matches stay inside the scope. A scope that already has the other hash version is refused. With no provider, ids and rows stay as they were in 0.1. There is no migration in this change. The exact digest is still stored, and SimHash and MinHash signatures are still stored in the clear, so this is not database privacy. Band lookup keys are SipHash-2-4 under a key derived from the scope key. See docs/keyed-ids.md.
+
 ### Key provider groundwork
-A caller can wrap a random key per scope, and a helper can build an HMAC chunk id from cleaned text. The write path does not use either yet, so stored ids are unchanged. This is not database privacy protection.
+A caller can wrap a random key per scope, and a helper can build an HMAC chunk id from cleaned text.
 
 ### Wrapped scope keys in SQLite
-The SQLite package can keep each scope's wrapped key in the same file as the other Rechunk tables. A later process that opens that file with the same wrapping key gets the same scope key. The wrapping key is not stored in the file. A backup of the file still contains the wrapped keys, so deleting a row is not secure erase. The caller has to keep the wrapping key. Fingerprint rows and chunk ids are unchanged, and the write path still does not use these keys.
+The SQLite package can keep each scope's wrapped key in the same file as the other Rechunk tables. A later process that opens that file with the same wrapping key gets the same scope key. The wrapping key is not stored in the file. A backup of the file still contains the wrapped keys, so deleting a row is not secure erase. The caller has to keep the wrapping key.
 
 ### Threat model
 A short document on what Rechunk protects, what it does not, and what still leaks, such as embeddings in your vector store.

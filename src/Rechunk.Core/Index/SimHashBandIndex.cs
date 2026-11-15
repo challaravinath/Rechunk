@@ -23,8 +23,14 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
     private readonly ConcurrentDictionary<string, Shard> _shards = new(StringComparer.Ordinal);
     private readonly SimHashBandLayout _layout;
     private readonly int _bandCount;
+    private readonly BandKeyDirectory? _bands;
 
     public SimHashBandIndex(int maxHammingDistance = 3)
+        : this(maxHammingDistance, null)
+    {
+    }
+
+    internal SimHashBandIndex(int maxHammingDistance, BandKeyDirectory? bands)
     {
         if (maxHammingDistance is < 0 or > 63)
         {
@@ -34,6 +40,7 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
         MaxHammingDistance = maxHammingDistance;
         _layout = new SimHashBandLayout(maxHammingDistance);
         _bandCount = _layout.BandCount;
+        _bands = bands;
     }
 
     public int MaxHammingDistance { get; }
@@ -70,13 +77,13 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
         {
             if (shard.Items.TryGetValue(id, out var old))
             {
-                RemoveFromBuckets(shard, old);
+                RemoveFromBuckets(scope, shard, old);
             }
 
             shard.Items[id] = entry;
             for (var band = 0; band < _bandCount; band++)
             {
-                var key = Slice(simHash, band);
+                var key = StoredSlice(scope, simHash, band);
                 if (!shard.Tables[band].TryGetValue(key, out var bucket))
                 {
                     bucket = new List<Entry>(2);
@@ -104,7 +111,7 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
                 return false;
             }
 
-            RemoveFromBuckets(shard, entry);
+            RemoveFromBuckets(scope, shard, entry);
             return true;
         }
     }
@@ -127,7 +134,7 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
         {
             for (var band = 0; band < _bandCount; band++)
             {
-                if (!shard.Tables[band].TryGetValue(Slice(simHash, band), out var bucket))
+                if (!shard.Tables[band].TryGetValue(StoredSlice(scope, simHash, band), out var bucket))
                 {
                     continue;
                 }
@@ -182,13 +189,17 @@ public sealed class SimHashBandIndex : INearDuplicateIndex
         return ValueTask.FromResult(Find(scope, fingerprint.SimHash));
     }
 
-    private ulong Slice(ulong hash, int band) => _layout.Slice(hash, band);
+    private ulong StoredSlice(string scope, ulong hash, int band)
+    {
+        var raw = _layout.Slice(hash, band);
+        return _bands is null ? raw : _bands.Protect(scope, BandKind.SimHash, band, raw);
+    }
 
-    private void RemoveFromBuckets(Shard shard, Entry entry)
+    private void RemoveFromBuckets(string scope, Shard shard, Entry entry)
     {
         for (var band = 0; band < _bandCount; band++)
         {
-            var key = Slice(entry.SimHash, band);
+            var key = StoredSlice(scope, entry.SimHash, band);
             if (!shard.Tables[band].TryGetValue(key, out var bucket))
             {
                 continue;

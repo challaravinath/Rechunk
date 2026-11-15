@@ -3,7 +3,7 @@ namespace Rechunk;
 /// <summary>
 /// HMAC chunk ids. Hash version 2 is HMAC-SHA256 of the SHA-256 of the cleaned text, under the scope key.
 /// The text form starts with <see cref="Prefix"/> so it is not the digest itself.
-/// Nothing in the pipeline calls this until a later change wires it in. Stored ids stay the hex digest until then.
+/// The pipeline uses this when a key provider is set. With no provider, ids stay the hex digest.
 /// </summary>
 public static class ChunkIds
 {

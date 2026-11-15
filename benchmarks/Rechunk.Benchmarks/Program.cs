@@ -11,4 +11,10 @@ if (args.Contains("--synthetic"))
     return;
 }
 
+if (args.Contains("--keyed-compare"))
+{
+    await SyntheticMeasurement.RunKeyedCompareAsync(Console.Out);
+    return;
+}
+
 BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly).Run(args);

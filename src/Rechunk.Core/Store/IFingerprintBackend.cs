@@ -63,4 +63,10 @@ public interface IFingerprintBackend : IBandStorage
     /// duplicates that point at it). A row that is pending, or owned by another chunk, stays. Says whether a row went.
     /// </summary>
     ValueTask<bool> RemoveOwnedAsync(string scope, ReadOnlyMemory<byte> exactHash, ChunkId owner, CancellationToken ct = default);
+
+    /// <summary>Committed hashes whose stored chunk is this owner. Used when the chunk id is not the digest.</summary>
+    ValueTask<IReadOnlyList<byte[]>> ListOwnedHashesAsync(string scope, ChunkId owner, CancellationToken ct = default);
+
+    /// <summary>The digest stored for this text id, or null. The text id is the id of that text, even when the row points at another chunk.</summary>
+    ValueTask<byte[]?> FindHashByTextIdAsync(string scope, ChunkId textId, CancellationToken ct = default);
 }

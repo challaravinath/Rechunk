@@ -83,7 +83,7 @@ public sealed partial class RevisionTracker : IRevisionTracker
         var manifest = await _store.GetAsync(scope, document, ct).ConfigureAwait(false);
         var old = manifest?.Entries ?? Array.Empty<ManifestEntry>();
         var from = manifest?.Revision ?? 0;
-        var items = (await IdentifyAsync(newChunks, ct).ConfigureAwait(false)).Items;
+        var items = (await IdentifyAsync(scope, newChunks, ct).ConfigureAwait(false)).Items;
         var oldById = FirstById(old);
         var newIds = items.Select(i => i.Id.Value).ToHashSet(StringComparer.Ordinal);
         var oldByOrdinal = old.GroupBy(e => e.Ordinal).ToDictionary(g => g.Key, g => g.First());
@@ -281,6 +281,14 @@ public sealed partial class RevisionTracker : IRevisionTracker
             }
         }
 
+        if (hashes.Count == 0)
+        {
+            foreach (var hash in await _fingerprints.ListOwnedHashesAsync(effective, claim.Chunk, ct).ConfigureAwait(false))
+            {
+                hashes.Add(hash);
+            }
+        }
+
         return await _fingerprints.ForgetAsync(effective, claim.Chunk, hashes, ct).ConfigureAwait(false);
     }
 
@@ -313,7 +321,7 @@ public sealed partial class RevisionTracker : IRevisionTracker
         }
 
         // A scan that fails stops here: nothing has been stored, and the caller can try again.
-        var identified = await IdentifyAsync(inputs, ct).ConfigureAwait(false);
+        var identified = await IdentifyAsync(scope, inputs, ct).ConfigureAwait(false);
         var done = await ReviseInnerAsync(
             document, scope, identified.Items, embedder, sink, holder, actor, deleteKind, deleteReason, source ?? string.Empty, ct)
             .ConfigureAwait(false);
@@ -610,13 +618,14 @@ public sealed partial class RevisionTracker : IRevisionTracker
 
     // Scans the chunks (when that is on), then works out the id of each from the text that is left. A chunk with a Block
     // finding is not part of the document: it is returned in Blocked and never gets an id.
-    private async ValueTask<Identified> IdentifyAsync(IReadOnlyList<ChunkInput> chunks, CancellationToken ct)
+    private async ValueTask<Identified> IdentifyAsync(string scope, IReadOnlyList<ChunkInput> chunks, CancellationToken ct)
     {
         foreach (var chunk in chunks)
         {
             ArgumentNullException.ThrowIfNull(chunk);
         }
 
+        var key = await _pipeline.KeyForAsync(scope, ct).ConfigureAwait(false);
         var prepared = await _pipeline.ScanAsync(chunks, ct).ConfigureAwait(false);
         var list = new List<Item>(prepared.Count);
         var blocked = new List<ChunkInput>();
@@ -628,7 +637,7 @@ public sealed partial class RevisionTracker : IRevisionTracker
                 continue;
             }
 
-            var (id, language) = _pipeline.IdentifyPrepared(chunk);
+            var (id, language) = _pipeline.IdentifyPrepared(chunk, key);
             list.Add(new Item(chunk, id, language));
         }
 

@@ -9,11 +9,18 @@ namespace Rechunk;
 public sealed class BandedMinHashIndex : IMinHashIndex
 {
     private readonly IBandStorage _storage;
+    private readonly BandKeyDirectory? _bands;
 
     public BandedMinHashIndex(IBandStorage storage, MinHashOptions options)
+        : this(storage, options, null)
+    {
+    }
+
+    internal BandedMinHashIndex(IBandStorage storage, MinHashOptions options, BandKeyDirectory? bands)
     {
         _storage = storage ?? throw new ArgumentNullException(nameof(storage));
         ArgumentNullException.ThrowIfNull(options);
+        _bands = bands;
 
         Permutations = options.Permutations;
         Threshold = options.Threshold;
@@ -42,7 +49,7 @@ public sealed class BandedMinHashIndex : IMinHashIndex
             BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(HeaderBytes + (4 * i)), signature[i]);
         }
 
-        return _storage.PutAsync(scope, BandKind.MinHash, id.Value, payload, Keys(signature), ct);
+        return _storage.PutAsync(scope, BandKind.MinHash, id.Value, payload, Keys(scope, signature), ct);
     }
 
     public async ValueTask RemoveAsync(ChunkId id, string scope, CancellationToken ct = default)
@@ -53,7 +60,7 @@ public sealed class BandedMinHashIndex : IMinHashIndex
             return;
         }
 
-        await _storage.DeleteAsync(scope, BandKind.MinHash, id.Value, Keys(ReadSignature(payload)), ct).ConfigureAwait(false);
+        await _storage.DeleteAsync(scope, BandKind.MinHash, id.Value, Keys(scope, ReadSignature(payload)), ct).ConfigureAwait(false);
     }
 
     public async ValueTask<IReadOnlyList<NearDuplicateMatch>> FindAsync(
@@ -62,7 +69,7 @@ public sealed class BandedMinHashIndex : IMinHashIndex
         var signature = fingerprint.MinHash;
         CheckLength(signature.Span);
 
-        var entries = await _storage.QueryAsync(scope, BandKind.MinHash, Keys(signature.Span), ct).ConfigureAwait(false);
+        var entries = await _storage.QueryAsync(scope, BandKind.MinHash, Keys(scope, signature.Span), ct).ConfigureAwait(false);
         var found = new List<NearDuplicateMatch>();
 
         foreach (var entry in entries)
@@ -104,12 +111,14 @@ public sealed class BandedMinHashIndex : IMinHashIndex
         return signature;
     }
 
-    private BandKey[] Keys(ReadOnlySpan<uint> signature)
+    private BandKey[] Keys(string scope, ReadOnlySpan<uint> signature)
     {
         var keys = new BandKey[Lsh.Bands];
         for (var band = 0; band < keys.Length; band++)
         {
-            keys[band] = new BandKey(band, Lsh.BandKey(signature, band));
+            var raw = Lsh.BandKey(signature, band);
+            var stored = _bands is null ? raw : _bands.Protect(scope, BandKind.MinHash, band, raw);
+            keys[band] = new BandKey(band, stored);
         }
 
         return keys;

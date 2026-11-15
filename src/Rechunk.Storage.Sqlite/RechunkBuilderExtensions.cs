@@ -19,10 +19,14 @@ public static class RechunkBuilderExtensions
 
         // Replace, not TryAdd: asking for SQLite storage should win over the in memory defaults.
         builder.Services.Replace(ServiceDescriptor.Singleton<IFingerprintStore>(sp =>
-            new BackedFingerprintStore(
+        {
+            var rechunk = sp.GetRequiredService<RechunkOptions>();
+            rechunk.KeyProvider ??= sp.GetService<IKeyProvider>();
+            return new BackedFingerprintStore(
                 new SqliteFingerprintBackend(options),
-                sp.GetRequiredService<RechunkOptions>(),
-                sp.GetService<TimeProvider>())));
+                rechunk,
+                sp.GetService<TimeProvider>());
+        }));
         builder.Services.Replace(ServiceDescriptor.Singleton<IDeadLetterStore>(_ => new SqliteDeadLetterStore(options)));
         builder.Services.Replace(ServiceDescriptor.Singleton<IRevisionStore>(_ => new SqliteRevisionStore(options)));
         builder.Services.Replace(ServiceDescriptor.Singleton<IAuditLog>(_ => new SqliteAuditLog(options)));
