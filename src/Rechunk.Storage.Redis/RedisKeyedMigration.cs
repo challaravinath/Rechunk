@@ -168,13 +168,13 @@ internal sealed class RedisKeyedMigration : IMigratableFingerprints
     private async Task<bool> MoveBands(string scope, string oldId, string newId, ScopeKey key, SimHashBandLayout layout, LshParameters lsh)
     {
         var moved = false;
-        moved |= await MoveKind(scope, oldId, newId, BandKind.SimHash, payload => LegacyBands.SimHash(payload, layout, key), payload => RawSim(payload, layout)).ConfigureAwait(false);
-        moved |= await MoveKind(scope, oldId, newId, BandKind.MinHash, payload => LegacyBands.MinHash(payload, lsh, key), payload => RawMin(payload, lsh)).ConfigureAwait(false);
+        moved |= await MoveKind(scope, oldId, newId, BandKind.SimHash, payload => LegacyBands.SimHash(payload, layout, key), payload => RawSim(payload, layout), key).ConfigureAwait(false);
+        moved |= await MoveKind(scope, oldId, newId, BandKind.MinHash, payload => LegacyBands.MinHash(payload, lsh, key), payload => RawMin(payload, lsh), key).ConfigureAwait(false);
         return moved;
     }
 
     private async Task<bool> MoveKind(
-        string scope, string oldId, string newId, BandKind kind, Func<byte[], BandKey[]> next, Func<byte[], BandKey[]> raw)
+        string scope, string oldId, string newId, BandKind kind, Func<byte[], BandKey[]> next, Func<byte[], BandKey[]> raw, ScopeKey key)
     {
         var entry = _keys.Entry(scope, kind, oldId);
         var payload = await Db.StringGetAsync(entry).ConfigureAwait(false);
@@ -184,9 +184,10 @@ internal sealed class RedisKeyedMigration : IMigratableFingerprints
         }
 
         var bytes = (byte[])payload!;
+        var sealedPayload = PayloadCipher.Encrypt(key, scope, newId, kind == BandKind.SimHash ? "simhash" : "minhash", bytes);
         if (oldId != newId)
         {
-            await Db.StringSetAsync(_keys.Entry(scope, kind, newId), bytes).ConfigureAwait(false);
+            await Db.StringSetAsync(_keys.Entry(scope, kind, newId), sealedPayload).ConfigureAwait(false);
         }
 
         foreach (var band in next(bytes))

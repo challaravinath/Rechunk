@@ -34,17 +34,18 @@ public sealed class BandedSimHashIndex : INearDuplicateIndex
         BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(8), fingerprint.GuardSignature);
         BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(16), fingerprint.ContentSignature);
         BinaryPrimitives.WriteUInt64LittleEndian(payload.AsSpan(24), fingerprint.IdentifierSignature);
-        return _storage.PutAsync(scope, BandKind.SimHash, id.Value, payload, Keys(scope, fingerprint.SimHash), ct);
+        return _storage.PutAsync(scope, BandKind.SimHash, id.Value, Seal(scope, id.Value, payload), Keys(scope, fingerprint.SimHash), ct);
     }
 
     public async ValueTask RemoveAsync(ChunkId id, string scope, CancellationToken ct = default)
     {
-        var payload = await _storage.GetAsync(scope, BandKind.SimHash, id.Value, ct).ConfigureAwait(false);
-        if (payload is null)
+        var stored = await _storage.GetAsync(scope, BandKind.SimHash, id.Value, ct).ConfigureAwait(false);
+        if (stored is null)
         {
             return;
         }
 
+        var payload = Open(scope, id.Value, stored);
         var simHash = BinaryPrimitives.ReadUInt64LittleEndian(payload);
         await _storage.DeleteAsync(scope, BandKind.SimHash, id.Value, Keys(scope, simHash), ct).ConfigureAwait(false);
     }
@@ -57,10 +58,11 @@ public sealed class BandedSimHashIndex : INearDuplicateIndex
 
         foreach (var entry in entries)
         {
-            var other = BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload);
-            var guard = BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload.AsSpan(8));
-            var content = entry.Payload.Length >= 32 ? BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload.AsSpan(16)) : 0UL;
-            var identifiers = entry.Payload.Length >= 32 ? BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload.AsSpan(24)) : 0UL;
+            var payload = Open(scope, entry.Id, entry.Payload);
+            var other = BinaryPrimitives.ReadUInt64LittleEndian(payload);
+            var guard = BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(8));
+            var content = payload.Length >= 32 ? BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(16)) : 0UL;
+            var identifiers = payload.Length >= 32 ? BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(24)) : 0UL;
             var distance = BitOperations.PopCount(other ^ fingerprint.SimHash);
             if (distance <= MaxHammingDistance)
             {
@@ -86,4 +88,10 @@ public sealed class BandedSimHashIndex : INearDuplicateIndex
 
         return keys;
     }
+
+    private byte[] Seal(string scope, string id, byte[] payload) =>
+        _bands is null ? payload : _bands.Seal(scope, id, "simhash", payload);
+
+    private byte[] Open(string scope, string id, byte[] payload) =>
+        _bands is null ? payload : _bands.Open(scope, id, "simhash", payload);
 }

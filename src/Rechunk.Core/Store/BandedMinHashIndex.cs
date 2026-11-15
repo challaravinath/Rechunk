@@ -49,17 +49,18 @@ public sealed class BandedMinHashIndex : IMinHashIndex
             BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(HeaderBytes + (4 * i)), signature[i]);
         }
 
-        return _storage.PutAsync(scope, BandKind.MinHash, id.Value, payload, Keys(scope, signature), ct);
+        return _storage.PutAsync(scope, BandKind.MinHash, id.Value, Seal(scope, id.Value, payload), Keys(scope, signature), ct);
     }
 
     public async ValueTask RemoveAsync(ChunkId id, string scope, CancellationToken ct = default)
     {
-        var payload = await _storage.GetAsync(scope, BandKind.MinHash, id.Value, ct).ConfigureAwait(false);
-        if (payload is null)
+        var stored = await _storage.GetAsync(scope, BandKind.MinHash, id.Value, ct).ConfigureAwait(false);
+        if (stored is null)
         {
             return;
         }
 
+        var payload = Open(scope, id.Value, stored);
         await _storage.DeleteAsync(scope, BandKind.MinHash, id.Value, Keys(scope, ReadSignature(payload)), ct).ConfigureAwait(false);
     }
 
@@ -74,12 +75,13 @@ public sealed class BandedMinHashIndex : IMinHashIndex
 
         foreach (var entry in entries)
         {
-            var jaccard = MinHasher.EstimateJaccard(signature.Span, ReadSignature(entry.Payload));
+            var payload = Open(scope, entry.Id, entry.Payload);
+            var jaccard = MinHasher.EstimateJaccard(signature.Span, ReadSignature(payload));
             if (jaccard >= Threshold)
             {
-                var guard = BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload);
-                var content = entry.Payload.Length >= HeaderBytes ? BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload.AsSpan(8)) : 0UL;
-                var identifiers = entry.Payload.Length >= HeaderBytes ? BinaryPrimitives.ReadUInt64LittleEndian(entry.Payload.AsSpan(16)) : 0UL;
+                var guard = BinaryPrimitives.ReadUInt64LittleEndian(payload);
+                var content = payload.Length >= HeaderBytes ? BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(8)) : 0UL;
+                var identifiers = payload.Length >= HeaderBytes ? BinaryPrimitives.ReadUInt64LittleEndian(payload.AsSpan(16)) : 0UL;
                 found.Add(new NearDuplicateMatch(new ChunkId(entry.Id), MatchStage.MinHash, null, jaccard, guard, content, identifiers));
             }
         }
@@ -94,8 +96,8 @@ public sealed class BandedMinHashIndex : IMinHashIndex
         string scope, ChunkId id, ReadOnlyMemory<uint> signature, CancellationToken ct = default)
     {
         CheckLength(signature.Span);
-        var payload = await _storage.GetAsync(scope, BandKind.MinHash, id.Value, ct).ConfigureAwait(false);
-        return payload is null ? null : MinHasher.EstimateJaccard(signature.Span, ReadSignature(payload));
+        var stored = await _storage.GetAsync(scope, BandKind.MinHash, id.Value, ct).ConfigureAwait(false);
+        return stored is null ? null : MinHasher.EstimateJaccard(signature.Span, ReadSignature(Open(scope, id.Value, stored)));
     }
 
     private const int HeaderBytes = 24;
@@ -110,6 +112,12 @@ public sealed class BandedMinHashIndex : IMinHashIndex
 
         return signature;
     }
+
+    private byte[] Seal(string scope, string id, byte[] payload) =>
+        _bands is null ? payload : _bands.Seal(scope, id, "minhash", payload);
+
+    private byte[] Open(string scope, string id, byte[] payload) =>
+        _bands is null ? payload : _bands.Open(scope, id, "minhash", payload);
 
     private BandKey[] Keys(string scope, ReadOnlySpan<uint> signature)
     {

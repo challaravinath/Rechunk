@@ -15,7 +15,7 @@ namespace Rechunk;
 /// only for pairs saved in that call.
 ///
 /// Pass the same <see cref="RechunkOptions"/> the fingerprints were built with, so SimHash and MinHash band
-/// counts match. The exact digest and the signature payload are not encrypted. Audit rows and dead letters
+/// counts match. A keyed signature payload is encrypted. The exact digest stays as the lookup key. Audit rows and dead letters
 /// keep the old ids. Rechunk does not update your vector store. Use the mapping callback for that.
 /// Language partitions of the scope (the scope plus the language separator) are included. The key is the one
 /// for the scope you pass, not a separate key per language.

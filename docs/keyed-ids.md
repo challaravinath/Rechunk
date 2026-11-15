@@ -19,7 +19,7 @@ var pipeline = RechunkPipeline.CreateBuilder()
 
 The fingerprint store has to be built with the same provider. The wrapping key stays with the caller. It is not a column. A new process that opens the SQLite file with that same wrapping key gets the same scope key. A backup of the file still has the wrapped keys, so deleting a row is not secure erase.
 
-Fingerprint rows record the hash version and the key version. Version 1 is the unkeyed digest id. Version 2 is the HMAC id. The exact lookup is still the SHA-256 of the cleaned text, so a reader of the table can still match a guessed text against that column until a later migration. SimHash and MinHash signatures are stored in the clear until a later encryption change. Keyed ids alone do not make the database private.
+Fingerprint rows record the hash version and the key version. Version 1 is the unkeyed digest id. Version 2 is the HMAC id. The exact lookup is still the SHA-256 of the cleaned text, so a reader of the table can still match a guessed text against that column. With a key provider, the SimHash and MinHash payloads stored in SQLite or Redis are encrypted. The in memory indexes are not. See docs/threat-model.md.
 
 ## Band lookup keys
 
@@ -27,7 +27,7 @@ SimHash and MinHash are unchanged. What changes is the bucket key written for ea
 
 The bucket key is SipHash-2-4 of the band kind, the band number, and the raw slice. SipHash-2-4 is a keyed pseudorandom function for short messages. Its output is 64 bits, so two different slices can share a bucket. That only adds a candidate. The real SimHash distance or the MinHash estimate still decides whether the chunks match. SipHash is not used for the chunk id. The id stays HMAC-SHA256.
 
-The 128 bit SipHash key is HMAC-SHA256 of the label `rechunk-band-siphash-v1` under the scope key. It is not a copy of the scope key's bytes. The same raw slice in two scopes is stored under two different bucket keys. Someone who can read the index still cannot look up a new text without the scope key. Someone who can read the signature payload can see the SimHash and the MinHash. Hiding that payload is a separate change.
+The 128 bit SipHash key is HMAC-SHA256 of the label `rechunk-band-siphash-v1` under the scope key. It is not a copy of the scope key's bytes. The same raw slice in two scopes is stored under two different bucket keys. Someone who can read the index still cannot look up a new text without the scope key. The signature payload itself is encrypted under a different derived key when the store is SQLite or Redis.
 
 ## Migrating an existing scope
 
@@ -39,4 +39,4 @@ A dry run (`MigrationRun.DryRun`) counts rows and calls `OnMapped` without writi
 
 Rows are saved one at a time, and the old-to-new map is stored with the fingerprints. Stop by throwing from `OnStep`, then call `RunAsync` again with the same stores. Rows already at version 2 are skipped. A finished scope does nothing on a later call.
 
-The scope argument is the caller's scope. Language partitions of that scope are included. The key is the one for the scope you pass. Pass the same `RechunkOptions` the fingerprints were built with, so the band counts match. The exact digest and the signature payload stay in the clear. Audit rows and dead letters keep the old ids. There is no signature encryption in this step.
+The scope argument is the caller's scope. Language partitions of that scope are included. The key is the one for the scope you pass. Pass the same `RechunkOptions` the fingerprints were built with, so the band counts match. Migration encrypts the signature payload as it rewrites a row. The exact digest stays as the lookup key. Audit rows and dead letters keep the old ids.
