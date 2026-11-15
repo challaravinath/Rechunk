@@ -19,6 +19,22 @@ var pipeline = RechunkPipeline.CreateBuilder()
 
 The fingerprint store has to be built with the same provider. The wrapping key stays with the caller. It is not a column. A new process that opens the SQLite file with that same wrapping key gets the same scope key. A backup of the file still has the wrapped keys, so deleting a row is not secure erase.
 
+## Key Vault
+
+`Rechunk.Keys.AzureKeyVault` wraps the same scope keys with a key that stays in Azure Key Vault. The store still holds only wrapped bytes. Each row also records the vault key id and the version that wrapped it. Unwrap uses that version, so creating a newer version of the vault key does not make old rows unreadable. The old version has to remain able to unwrap.
+
+```csharp
+using Azure.Identity;
+using Rechunk.Keys.AzureKeyVault;
+
+var keys = new AzureKeyVaultKeyProvider(
+    new Uri("https://myvault.vault.azure.net/keys/rechunk"),
+    new DefaultAzureCredential(),
+    new SqliteWrappedKeyStore("Data Source=rechunk.db"));
+```
+
+An RSA key uses RSA-OAEP-256. Pass `VaultWrapAlgorithm.Aes256KeyWrap` only when the vault key is AES. The bytes that get wrapped include the scope name, and they are padded to a multiple of 8 so AES key wrap can carry them. A 2048 bit RSA key can wrap a short scope name. A very long scope name can be too large for that key. Key Vault WrapKey does not take associated data. The scope name and the scope key version are inside the wrapped bytes and are checked after unwrap. That is not the AES-GCM associated data used by `LocalWrappedKeyProvider`. A record written by one of those providers does not open with the other. Unwrap refuses a stored key id that names a different key, or a different vault, than the one you passed in.
+
 Fingerprint rows record the hash version and the key version. Version 1 is the unkeyed digest id. Version 2 is the HMAC id. The exact lookup is still the SHA-256 of the cleaned text, so a reader of the table can still match a guessed text against that column. With a key provider, the SimHash and MinHash payloads stored in SQLite or Redis are encrypted. The in memory indexes are not. See docs/threat-model.md.
 
 ## Band lookup keys

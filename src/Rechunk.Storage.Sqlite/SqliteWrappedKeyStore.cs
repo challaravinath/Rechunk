@@ -4,6 +4,7 @@ namespace Rechunk.Storage.Sqlite;
 
 /// <summary>
 /// Wrapped scope keys in the Rechunk SQLite file. The table holds the nonce, tag, and ciphertext.
+/// A Key Vault row also stores the vault key id, the vault key version, and the wrap algorithm.
 /// The wrapping key is not stored, and it is not written to a log by this class.
 ///
 /// A new process that opens the same file with the same wrapping key gets the same scope key.
@@ -36,7 +37,7 @@ public sealed class SqliteWrappedKeyStore : IWrappedKeyStore
         using var connection = _db.Open();
         using var command = connection.CreateCommand();
         command.CommandText = """
-            SELECT version, nonce, tag, ciphertext
+            SELECT version, nonce, tag, ciphertext, protector_id, protector_version, wrap_algorithm
             FROM rechunk_wrapped_key
             WHERE scope = $scope
             """;
@@ -52,7 +53,12 @@ public sealed class SqliteWrappedKeyStore : IWrappedKeyStore
             reader.IsDBNull(0) ? 0 : reader.GetInt32(0),
             Blob(reader, 1),
             Blob(reader, 2),
-            Blob(reader, 3)));
+            Blob(reader, 3))
+        {
+            ProtectorId = reader.IsDBNull(4) ? null : reader.GetString(4),
+            ProtectorVersion = reader.IsDBNull(5) ? null : reader.GetString(5),
+            WrapAlgorithm = reader.IsDBNull(6) ? null : reader.GetString(6),
+        });
     }
 
     public ValueTask<bool> TryAddAsync(WrappedKeyRecord record, CancellationToken ct = default)
@@ -64,10 +70,20 @@ public sealed class SqliteWrappedKeyStore : IWrappedKeyStore
             throw new ArgumentException("Scope cannot be empty.", nameof(record));
         }
 
-        if (record.Version < 1
-            || record.Nonce is null || record.Nonce.Length != 12
-            || record.Tag is null || record.Tag.Length != 16
-            || record.Ciphertext is null || record.Ciphertext.Length != ScopeKey.MaterialLength)
+        if (record.Version < 1 || record.Nonce is null || record.Tag is null || record.Ciphertext is null || record.Ciphertext.Length == 0)
+        {
+            throw new ArgumentException("The wrapped record is not a scope key this version can store.", nameof(record));
+        }
+
+        var vault = !string.IsNullOrEmpty(record.ProtectorId);
+        if (vault)
+        {
+            if (string.IsNullOrEmpty(record.ProtectorVersion) || string.IsNullOrEmpty(record.WrapAlgorithm))
+            {
+                throw new ArgumentException("A vault wrapped record needs the key version and the algorithm.", nameof(record));
+            }
+        }
+        else if (record.Nonce.Length != 12 || record.Tag.Length != 16 || record.Ciphertext.Length != ScopeKey.MaterialLength)
         {
             throw new ArgumentException("The wrapped record is not a scope key this version can store.", nameof(record));
         }
@@ -78,14 +94,18 @@ public sealed class SqliteWrappedKeyStore : IWrappedKeyStore
             {
                 using var command = connection.CreateCommand();
                 command.CommandText = """
-                    INSERT INTO rechunk_wrapped_key (scope, version, nonce, tag, ciphertext)
-                    VALUES ($scope, $version, $nonce, $tag, $ciphertext)
+                    INSERT INTO rechunk_wrapped_key
+                        (scope, version, nonce, tag, ciphertext, protector_id, protector_version, wrap_algorithm)
+                    VALUES ($scope, $version, $nonce, $tag, $ciphertext, $protector, $protectorVersion, $algorithm)
                     """;
                 command.Parameters.AddWithValue("$scope", record.Scope);
                 command.Parameters.AddWithValue("$version", record.Version);
                 command.Parameters.AddWithValue("$nonce", record.Nonce);
                 command.Parameters.AddWithValue("$tag", record.Tag);
                 command.Parameters.AddWithValue("$ciphertext", record.Ciphertext);
+                command.Parameters.AddWithValue("$protector", (object?)record.ProtectorId ?? DBNull.Value);
+                command.Parameters.AddWithValue("$protectorVersion", (object?)record.ProtectorVersion ?? DBNull.Value);
+                command.Parameters.AddWithValue("$algorithm", (object?)record.WrapAlgorithm ?? DBNull.Value);
                 command.ExecuteNonQuery();
                 return true;
             });

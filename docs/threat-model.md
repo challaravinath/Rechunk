@@ -36,9 +36,9 @@ Without a key provider, ids, band keys, and payloads stay in the 0.1 form.
 - A backup or a copy of the file still has the wrapped key and the ciphertext. Deleting a row is not secure erase.
 - Audit rows and dead letters are not rewritten by the migration. A dead letter can still hold text if that option is on.
 - Vectors, embeddings, and any store outside Rechunk are unchanged. The migration reports old id to new id so the caller can update them.
-- There is no key rotation. A new scope key does not re-encrypt old payloads. Destroying the wrapping key makes the scope key unreadable. It does not wipe copies.
-- A Key Vault provider is not in this version. It is planned for 0.2.1. The wrapping key is supplied by the caller.
+- There is no scope key rotation. A new scope key does not re-encrypt old payloads. Destroying a local wrapping key makes those scope keys unreadable. It does not wipe copies.
+- `Rechunk.Keys.AzureKeyVault` can wrap scope keys with a key that stays in Key Vault. The process receives the unwrapped scope key, not the vault key. Each stored record keeps the vault key id and version that wrapped it, and unwrap uses that version. A newer vault key does not by itself open or break those records, as long as the recorded version can still unwrap. This package is not in the 0.2.0 NuGet release.
 
 ## Key handling
 
-The caller passes a 32 byte wrapping key. The scope key is 32 random bytes, wrapped with AES-GCM, and stored if you use `SqliteWrappedKeyStore`. It is not derived from the wrapping key or from another scope. The band key and the payload key are each an HMAC of a fixed label under the scope key. Losing the wrapping key means the scope key in that file cannot be opened. The process keeps the unwrapped scope key, and the derived band and payload keys, until it exits.
+The caller can pass a 32 byte wrapping key. The scope key is 32 random bytes, wrapped with AES-GCM, and stored if you use `SqliteWrappedKeyStore`. It is not derived from the wrapping key or from another scope. The band key and the payload key are each an HMAC of a fixed label under the scope key. Losing the wrapping key means the scope key in that file cannot be opened. With the Key Vault package, the vault key stays in the vault and the store keeps the wrapped scope key plus the vault key version. The process keeps the unwrapped scope key, and the derived band and payload keys, until it exits.

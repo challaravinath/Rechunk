@@ -3,6 +3,15 @@ namespace Rechunk;
 /// <summary>AES-GCM wrapper for one scope key. The fields are ciphertext, not the scope key.</summary>
 public sealed record WrappedKeyRecord(string Scope, int Version, byte[] Nonce, byte[] Tag, byte[] Ciphertext)
 {
+    /// <summary>Id of the key that wrapped this record. Null for a record wrapped by a local AES key.</summary>
+    public string? ProtectorId { get; init; }
+
+    /// <summary>Version of that key. Unwrap uses this version, not whatever is current later.</summary>
+    public string? ProtectorVersion { get; init; }
+
+    /// <summary>Name of the wrap algorithm, when a protector id is set.</summary>
+    public string? WrapAlgorithm { get; init; }
+
     public override string ToString() => "wrapped-key-v" + Version.ToString(System.Globalization.CultureInfo.InvariantCulture);
 }
 
@@ -45,7 +54,12 @@ public sealed class InMemoryWrappedKeyStore : IWrappedKeyStore
     }
 
     private static WrappedKeyRecord Copy(WrappedKeyRecord record) =>
-        new(record.Scope, record.Version, Clone(record.Nonce), Clone(record.Tag), Clone(record.Ciphertext));
+        new(record.Scope, record.Version, Clone(record.Nonce), Clone(record.Tag), Clone(record.Ciphertext))
+        {
+            ProtectorId = record.ProtectorId,
+            ProtectorVersion = record.ProtectorVersion,
+            WrapAlgorithm = record.WrapAlgorithm,
+        };
 
     private static byte[] Clone(byte[] value) => value is null ? Array.Empty<byte>() : (byte[])value.Clone();
 }

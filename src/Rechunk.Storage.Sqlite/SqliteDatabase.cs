@@ -149,11 +149,14 @@ internal sealed class SqliteDatabase
         );
 
         CREATE TABLE IF NOT EXISTS rechunk_wrapped_key (
-            scope      TEXT    NOT NULL PRIMARY KEY,
-            version    INTEGER NOT NULL,
-            nonce      BLOB    NOT NULL,
-            tag        BLOB    NOT NULL,
-            ciphertext BLOB    NOT NULL
+            scope              TEXT    NOT NULL PRIMARY KEY,
+            version            INTEGER NOT NULL,
+            nonce              BLOB    NOT NULL,
+            tag                BLOB    NOT NULL,
+            ciphertext         BLOB    NOT NULL,
+            protector_id       TEXT,
+            protector_version  TEXT,
+            wrap_algorithm     TEXT
         ) WITHOUT ROWID;
         """;
 
@@ -192,6 +195,9 @@ internal sealed class SqliteDatabase
         AddColumn(connection, "rechunk_exact", "key_version", "ALTER TABLE rechunk_exact ADD COLUMN key_version INTEGER NOT NULL DEFAULT 0;");
         AddColumn(connection, "rechunk_exact", "text_id", "ALTER TABLE rechunk_exact ADD COLUMN text_id TEXT NOT NULL DEFAULT '';");
         AddColumn(connection, "rechunk_scope_hash", "migrating", "ALTER TABLE rechunk_scope_hash ADD COLUMN migrating INTEGER NOT NULL DEFAULT 0;");
+        AddColumn(connection, "rechunk_wrapped_key", "protector_id", "ALTER TABLE rechunk_wrapped_key ADD COLUMN protector_id TEXT;");
+        AddColumn(connection, "rechunk_wrapped_key", "protector_version", "ALTER TABLE rechunk_wrapped_key ADD COLUMN protector_version TEXT;");
+        AddColumn(connection, "rechunk_wrapped_key", "wrap_algorithm", "ALTER TABLE rechunk_wrapped_key ADD COLUMN wrap_algorithm TEXT;");
         Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_exact_chunk ON rechunk_exact (scope, chunk);");
         Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_exact_text ON rechunk_exact (scope, text_id);");
     }

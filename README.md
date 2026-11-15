@@ -25,7 +25,7 @@ dotnet add package Rechunk.VectorData
 dotnet add package Rechunk.SemanticKernel
 ```
 
-Version 0.2.0 is the current set of packages. They are published when the v0.2.0 tag is pushed. The API can still change before 1.0. Rechunk.Extensions.AI is not published.
+Version 0.2.0 is the current set of packages. They are published when the v0.2.0 tag is pushed. The API can still change before 1.0. Rechunk.Extensions.AI is not published. Rechunk.Keys.AzureKeyVault is in this repo and is not part of that 0.2.0 publish.
 
 ## Quick start
 
@@ -53,6 +53,7 @@ Console.WriteLine(report.UniqueCount);
 | Rechunk.Storage.Redis | Many workers share the fingerprints, dead letters, revisions and audit log. |
 | Rechunk.VectorData | Batched upserts and scoped deletes for a VectorData collection. |
 | Rechunk.SemanticKernel | Register Rechunk on a Semantic Kernel builder. |
+| Rechunk.Keys.AzureKeyVault | Wrap scope keys with a key that stays in Azure Key Vault. |
 
 ## Benchmarks
 
