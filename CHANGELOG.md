@@ -2,28 +2,43 @@
 
 All notable changes to Rechunk are listed here.
 
-## 0.2.0 (planned)
+## 0.2.0 (2026-11-15)
 
-### Keyed chunk ids
-Chunk ids and fingerprints are built with a secret key per scope, so a stored id can no longer be matched against a guessed text. Destroying a scope's key makes everything stored for that scope unreadable. This changes every chunk id, so existing stores need the migration step that ships with this release.
+Keyed ids for a scope that has a key provider. Stores that do not set a provider keep the 0.1 behavior. See docs/keyed-ids.md and docs/threat-model.md.
+
+### Keyed ids
+When a key provider is set, chunk ids on the write path are HMAC-SHA256 of the cleaned-text digest, under a random key for that scope. The id starts with `k2.`. The same text in another scope gets another id. Exact and near matches stay inside the scope. Fingerprint rows in memory, SQLite and Redis record hash version 2 and the key version. A scope that already has the other version refuses the write. With no provider, ids stay the hex digest.
+
+### Wrapped keys
+`SqliteWrappedKeyStore` keeps each scope key as AES-GCM ciphertext in the SQLite file. The wrapping key is supplied by the caller and is not stored. A later process that opens the file with the same wrapping key gets the same scope key. A wrong wrapping key fails and does not replace the row. A backup of the file still has the wrapped keys.
+
+### Migration
+`KeyedIdMigrator` rewrites one scope from digest ids to keyed ids. It does not run unless you call it. A dry run reports counts and the old id to new id map. The real run saves one row at a time, so a stopped run can continue. Writes to that scope are refused until it finishes. The scope version becomes 2 only at the end. A wrong wrapping key fails before anything is marked. The id map is how you update a vector store. Rechunk does not own those vectors.
 
 ### Signature encryption
-When a key provider is set, SimHash and MinHash payloads in SQLite and Redis are AES-GCM ciphertext. The data key is derived from the scope key with its own label. A tampered or swapped payload fails to open. The exact digest column is still stored, and the in memory indexes are not encrypted. See docs/threat-model.md.
-
-### Keyed id migration
-`KeyedIdMigrator` rewrites one scope from digest ids to keyed ids in memory, SQLite or Redis. It does not run unless you call it. A dry run only reports counts and the old id to new id map, which is what you use to update a vector store. Writes to that scope are refused while a run is in progress. The scope version becomes 2 only when the run finishes. A wrong wrapping key fails before anything is marked. The migration encrypts signature payloads. The exact digest stays as the lookup key. Audit rows and dead letters keep the old ids. See docs/keyed-ids.md.
-
-### Keyed ids on the write path
-When a key provider is set, chunk ids written by the pipeline are HMAC ids, and fingerprint rows in memory, SQLite and Redis record hash version 2 and the key version. Exact and near duplicate matches stay inside the scope. A scope that already has the other hash version is refused. With no provider, ids and rows stay as they were in 0.1. The exact digest is still stored. Band lookup keys are SipHash-2-4 under a key derived from the scope key. See docs/keyed-ids.md.
-
-### Key provider groundwork
-A caller can wrap a random key per scope, and a helper can build an HMAC chunk id from cleaned text.
-
-### Wrapped scope keys in SQLite
-The SQLite package can keep each scope's wrapped key in the same file as the other Rechunk tables. A later process that opens that file with the same wrapping key gets the same scope key. The wrapping key is not stored in the file. A backup of the file still contains the wrapped keys, so deleting a row is not secure erase. The caller has to keep the wrapping key.
+With a key provider, SimHash and MinHash payloads in SQLite and Redis are AES-GCM ciphertext. The data key is derived from the scope key with its own label. A tampered payload, or one moved to another row or field, does not open. Migration encrypts the payload as it rewrites a row. The in memory indexes are not encrypted.
 
 ### Threat model
-A short document on what Rechunk protects, what it does not, and what still leaks, such as embeddings in your vector store.
+docs/threat-model.md says what a database file, a backup, Redis, and process memory expose, and what they do not.
+
+### Upgrading from 0.1
+
+1. Keep a 32 byte wrapping key outside the database. Create the scope key with `LocalWrappedKeyProvider` and, if the key should survive a restart, `SqliteWrappedKeyStore`.
+2. Pass that provider to the pipeline and to the fingerprint store. Do this for a scope that already has rows only when you are ready to migrate it.
+3. Call `KeyedIdMigrator.RunAsync` with `MigrationRun.DryRun` set. Read the counts and the `OnMapped` pairs.
+4. Run it again without the dry run. The scope refuses fingerprint writes and revision commits until the run finishes.
+5. Update ids in your vector store from `OnMapped`. Rechunk does not write those vectors.
+6. A store with no provider is unchanged. A scope that still has digest rows refuses keyed writes. A scope that has been migrated refuses digest writes.
+7. If you implemented `IFingerprintStore` or `IFingerprintBackend` yourself, add `ListOwnedHashesAsync` and `FindHashByTextIdAsync`. Deletes of keyed ids use them, because the id is no longer the digest.
+
+### Known limits
+
+- The exact digest is still the lookup key. Someone with the database can test a guessed text against that column.
+- In memory indexes keep signatures in process memory.
+- There is no key rotation and no Key Vault provider. A Key Vault provider is planned for 0.2.1.
+- A backup or a copy of the file still has the wrapped key and the ciphertext. Deleting a row is not secure erase.
+- Audit rows and dead letters keep their old ids. A dead letter can still hold text if that option is on.
+- A scope that is already on version 2 is not migrated again.
 
 SQL Server, lease renewal and the other items that used to be listed here have moved to later versions. See ROADMAP.md.
 

@@ -25,7 +25,7 @@ dotnet add package Rechunk.VectorData
 dotnet add package Rechunk.SemanticKernel
 ```
 
-Version 0.1.0 is the first set of packages. They are not on NuGet until a release tag is published, and the API can still change. Rechunk.Extensions.AI is not published in 0.1.0.
+Version 0.2.0 is the current set of packages. They are published when the v0.2.0 tag is pushed. The API can still change before 1.0. Rechunk.Extensions.AI is not published.
 
 ## Quick start
 
@@ -68,7 +68,7 @@ None of these runs scores answer quality. The docs figure is one corpus, and bot
 
 ## Roadmap
 
-0.2 is planned and not built yet. The items are a SQL Server and Azure SQL store, lease renewal while an embed runs, safe handling when two workers see near duplicates at the same time, and NuGet trusted publishing.
+0.2.0 is shipped. Next is a Key Vault provider in 0.2.1, then erase by person. SQL Server, lease renewal, and the rest are later.
 
 The list is in [ROADMAP.md](ROADMAP.md).
 
