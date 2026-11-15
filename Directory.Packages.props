@@ -16,6 +16,8 @@
     <PackageVersion Include="Microsoft.Extensions.VectorData.Abstractions" Version="10.11.0" />
     <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.11.0" />
     <PackageVersion Include="Microsoft.SemanticKernel.Abstractions" Version="1.81.0" />
+    <PackageVersion Include="Azure.Security.KeyVault.Keys" Version="4.8.0" />
+    <PackageVersion Include="Azure.Identity" Version="1.14.2" />
 
     <!-- the Azure Functions sample -->
     <PackageVersion Include="Microsoft.Azure.Functions.Worker" Version="2.52.0" />

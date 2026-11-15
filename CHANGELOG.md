@@ -2,6 +2,11 @@
 
 All notable changes to Rechunk are listed here.
 
+## Unreleased
+
+### Key Vault key provider
+`Rechunk.Keys.AzureKeyVault` wraps each scope key with a key that stays in Azure Key Vault. The wrapped bytes and the vault key id and version are stored in the existing wrapped key store. Unwrap uses the recorded version, so a later vault key still opens old records while that version can unwrap. See docs/keyed-ids.md.
+
 ## 0.2.0 (2026-11-15)
 
 Keyed ids for a scope that has a key provider. Stores that do not set a provider keep the 0.1 behavior. See docs/keyed-ids.md and docs/threat-model.md.

@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Rechunk.Keys.AzureKeyVault</PackageId>
+    <Description>Wraps Rechunk scope keys with a key that stays in Azure Key Vault.</Description>
+    <RootNamespace>Rechunk.Keys.AzureKeyVault</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="Rechunk.Core.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Azure.Identity" />
+    <PackageReference Include="Azure.Security.KeyVault.Keys" />
+    <ProjectReference Include="..\Rechunk.Core\Rechunk.Core.csproj" />
+  </ItemGroup>
+
+</Project>

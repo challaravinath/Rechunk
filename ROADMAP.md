@@ -34,7 +34,7 @@ Keyed chunk ids when a provider is set, wrapped scope keys in SQLite, an opt-in 
 ## Planned
 
 ### 0.2.1 Key Vault
-- A key provider that keeps the wrapping key in Key Vault. The local wrapped provider stays for callers who hold the key themselves.
+- `Rechunk.Keys.AzureKeyVault` wraps scope keys with a Key Vault key. The vault key stays in the vault. The local wrapped provider stays for callers who hold a wrapping key themselves. The package is not in the 0.2.0 publish.
 
 ### 0.3.0 Erase by person
 - A subject index that links chunks to the people they are about, stored as keyed ids.
