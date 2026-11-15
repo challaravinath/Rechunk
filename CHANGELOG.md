@@ -2,10 +2,12 @@
 
 All notable changes to Rechunk are listed here.
 
-## Unreleased
+## 0.2.1 (2026-11-15)
 
 ### Key Vault key provider
 `Rechunk.Keys.AzureKeyVault` wraps each scope key with a key that stays in Azure Key Vault. The wrapped bytes and the vault key id and version are stored in the existing wrapped key store. Unwrap uses the recorded version, so a later vault key still opens old records while that version can unwrap. See docs/keyed-ids.md.
+
+Existing SQLite files gain three nullable columns on the wrapped key table the next time the database is opened.
 
 ## 0.2.0 (2026-11-15)
 

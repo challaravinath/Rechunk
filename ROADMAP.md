@@ -31,10 +31,10 @@ Exact, SimHash and MinHash dedup before embedding, revision tracking, a shared s
 ### 0.2.0
 Keyed chunk ids when a provider is set, wrapped scope keys in SQLite, an opt-in migration from 0.1 stores, encrypted SimHash and MinHash payloads in SQLite and Redis, and a threat model page. Stores with no provider stay as they were in 0.1. See CHANGELOG.md.
 
-## Planned
+### 0.2.1
+`Rechunk.Keys.AzureKeyVault` wraps scope keys with a Key Vault key. The vault key stays in the vault. The local wrapped provider stays for callers who hold a wrapping key themselves. See CHANGELOG.md.
 
-### 0.2.1 Key Vault
-- `Rechunk.Keys.AzureKeyVault` wraps scope keys with a Key Vault key. The vault key stays in the vault. The local wrapped provider stays for callers who hold a wrapping key themselves. The package is not in the 0.2.0 publish.
+## Planned
 
 ### 0.3.0 Erase by person
 - A subject index that links chunks to the people they are about, stored as keyed ids.

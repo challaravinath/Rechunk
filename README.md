@@ -23,9 +23,10 @@ dotnet add package Rechunk.Storage.Sqlite
 dotnet add package Rechunk.Storage.Redis
 dotnet add package Rechunk.VectorData
 dotnet add package Rechunk.SemanticKernel
+dotnet add package Rechunk.Keys.AzureKeyVault
 ```
 
-Version 0.2.0 is the current set of packages. They are published when the v0.2.0 tag is pushed. The API can still change before 1.0. Rechunk.Extensions.AI is not published. Rechunk.Keys.AzureKeyVault is in this repo and is not part of that 0.2.0 publish.
+Version 0.2.1 is the current set of packages. They are published when the v0.2.1 tag is pushed. The API can still change before 1.0. Rechunk.Extensions.AI is not published.
 
 ## Quick start
 
@@ -69,7 +70,7 @@ None of these runs scores answer quality. The docs figure is one corpus, and bot
 
 ## Roadmap
 
-0.2.0 is shipped. Next is a Key Vault provider in 0.2.1, then erase by person. SQL Server, lease renewal, and the rest are later.
+0.2.1 is shipped. Next is erase by person. SQL Server, lease renewal, and the rest are later.
 
 The list is in [ROADMAP.md](ROADMAP.md).
 

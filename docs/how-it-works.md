@@ -185,7 +185,7 @@ Erasing does not touch your source documents, the chunker's output, or the embed
 
 ## Status
 
-Version 0.2.0 is the current set of packages. They are published when the v0.2.0 tag is pushed. The API can still change before 1.0. Keyed ids are in [keyed-ids.md](keyed-ids.md).
+Version 0.2.1 is the current set of packages. They are published when the v0.2.1 tag is pushed. The API can still change before 1.0. Keyed ids are in [keyed-ids.md](keyed-ids.md).
 
 What works today:
 
@@ -222,6 +222,7 @@ What is still unfinished:
 | Rechunk.Extensions.VectorData | Vectors live in a `Microsoft.Extensions.VectorData` collection and you want batched upserts, retries, and the scoped delete revisions use. |
 | Rechunk.Extensions.AI | You want a wrapper over `IEmbeddingGenerator`. Today it forwards every text to the inner generator. It does not skip duplicates yet. |
 | Rechunk.SemanticKernel | You want Rechunk registered on a Semantic Kernel builder. That registration is all it does today. |
+| Rechunk.Keys.AzureKeyVault | You want to wrap scope keys with a key that stays in Azure Key Vault. |
 
 There is no SQL Server package. `sqlserver-schema.sql` is a sketch of the tables and has not been run against a server.
 
