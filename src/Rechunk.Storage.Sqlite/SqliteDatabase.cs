@@ -158,6 +158,14 @@ internal sealed class SqliteDatabase
             protector_version  TEXT,
             wrap_algorithm     TEXT
         ) WITHOUT ROWID;
+
+        CREATE TABLE IF NOT EXISTS rechunk_subject (
+            scope    TEXT NOT NULL,
+            chunk    TEXT NOT NULL,
+            kind     TEXT NOT NULL,
+            subject  TEXT NOT NULL,
+            PRIMARY KEY (scope, chunk, subject)
+        ) WITHOUT ROWID;
         """;
 
     // Changes for databases that an older version created. CREATE TABLE IF NOT EXISTS does not touch an existing table.
@@ -198,6 +206,16 @@ internal sealed class SqliteDatabase
         AddColumn(connection, "rechunk_wrapped_key", "protector_id", "ALTER TABLE rechunk_wrapped_key ADD COLUMN protector_id TEXT;");
         AddColumn(connection, "rechunk_wrapped_key", "protector_version", "ALTER TABLE rechunk_wrapped_key ADD COLUMN protector_version TEXT;");
         AddColumn(connection, "rechunk_wrapped_key", "wrap_algorithm", "ALTER TABLE rechunk_wrapped_key ADD COLUMN wrap_algorithm TEXT;");
+        Execute(connection, """
+            CREATE TABLE IF NOT EXISTS rechunk_subject (
+                scope    TEXT NOT NULL,
+                chunk    TEXT NOT NULL,
+                kind     TEXT NOT NULL,
+                subject  TEXT NOT NULL,
+                PRIMARY KEY (scope, chunk, subject)
+            ) WITHOUT ROWID;
+            """);
+        Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_subject_lookup ON rechunk_subject (scope, kind, subject);");
         Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_exact_chunk ON rechunk_exact (scope, chunk);");
         Execute(connection, "CREATE INDEX IF NOT EXISTS ix_rechunk_exact_text ON rechunk_exact (scope, text_id);");
     }

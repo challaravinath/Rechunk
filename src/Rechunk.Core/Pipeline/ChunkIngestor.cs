@@ -11,7 +11,11 @@ public sealed record IngestRequest(
     string? Holder = null,
     int Revision = 1,
     IReadOnlySet<ChunkId>? NearExclude = null,
-    string? Source = null);
+    string? Source = null)
+{
+    /// <summary>People this document is about. They are linked to every chunk of the request that ends up stored.</summary>
+    public IReadOnlyList<SubjectRef>? Subjects { get; init; }
+}
 
 public enum ChunkStatus
 {
@@ -44,7 +48,13 @@ public sealed record ChunkOutcome(
     ChunkStatus Status,
     ChunkId? Matched = null,
     MatchStage? Stage = null,
-    IReadOnlyList<PiiHit>? Findings = null);
+    IReadOnlyList<PiiHit>? Findings = null)
+{
+    /// <summary>Subject links written for this chunk, counted by kind. Empty when nothing was linked.</summary>
+    public IReadOnlyDictionary<string, int> SubjectCounts { get; init; } = EmptySubjectCounts;
+
+    internal static readonly IReadOnlyDictionary<string, int> EmptySubjectCounts = new Dictionary<string, int>();
+}
 
 public sealed record IngestResult(
     string Scope,
@@ -200,7 +210,8 @@ public sealed class ChunkIngestor
             try
             {
                 await Pause(attempt, ct).ConfigureAwait(false);
-                report = await _pipeline.DeduplicateAsync(scope, request.Chunks, new DedupClaimOptions(holder, null, request.NearExclude), ct).ConfigureAwait(false);
+                var chunks = SubjectRefs.MergeOnto(request.Chunks, request.Subjects);
+                report = await _pipeline.DeduplicateAsync(scope, chunks, new DedupClaimOptions(holder, null, request.NearExclude), ct).ConfigureAwait(false);
             }
             catch (Exception ex) when (!IsCancelled(ex, ct)
                 && ex is not KeyUnavailableException
@@ -252,10 +263,11 @@ public sealed class ChunkIngestor
         }
 
         var settled = await SettleAliasesAsync(report, committedIds).ConfigureAwait(false);
+        var outcomes = await FinishSubjectsAsync(scope, report, committedIds, settled, ct).ConfigureAwait(false);
 
         var finished = new IngestResult(
             scope, holder, done, report.DuplicateCount, report.InFlightCount, deadLetters, lost,
-            Outcomes(report, committedIds, settled), report.BlockedCount);
+            outcomes, report.BlockedCount);
         await WriteAuditAsync(request, scope, holder, finished, ct).ConfigureAwait(false);
         return finished;
     }
@@ -363,6 +375,70 @@ public sealed class ChunkIngestor
         }
 
         return settled;
+    }
+
+    // The pipeline already linked chunks it stored itself. Claims are linked here, after the commit.
+    private async ValueTask<List<ChunkOutcome>> FinishSubjectsAsync(
+        string scope, DedupReport report, HashSet<string> committedIds, HashSet<string> settled, CancellationToken ct)
+    {
+        var outcomes = Outcomes(report, committedIds, settled);
+        if (report.DryRun || _pipeline.Subjects is null)
+        {
+            return outcomes;
+        }
+
+        var key = await _pipeline.KeyForAsync(scope, ct).ConfigureAwait(false);
+        if (key is null)
+        {
+            return outcomes;
+        }
+
+        var links = new List<SubjectLink>();
+        for (var i = 0; i < outcomes.Count; i++)
+        {
+            var outcome = outcomes[i];
+            if (outcome.Status is not (ChunkStatus.Stored or ChunkStatus.Duplicate))
+            {
+                continue;
+            }
+
+            var decision = report.Decisions[i];
+            var counts = SubjectIds.CountByKind(SubjectIds.KeyAll(decision.Input.Subjects, key.Value));
+            if (counts.Count > 0)
+            {
+                outcomes[i] = outcome with { SubjectCounts = counts };
+            }
+
+            if (LinkedDuringDedup(report.Decisions, decision))
+            {
+                continue;
+            }
+
+            links.Add(new SubjectLink(outcomes[i].Target, decision.Input, outcomes[i].Id == outcomes[i].Target));
+        }
+
+        await SubjectLinker.ApplyAsync(_pipeline.Subjects, scope, key.Value, links, ct).ConfigureAwait(false);
+        return outcomes;
+    }
+
+    // True when Deduplicate already wrote the links, so this call must not write them again.
+    private static bool LinkedDuringDedup(IReadOnlyList<DedupDecision> decisions, DedupDecision decision)
+    {
+        if (decision.Claim is not null || decision.Outcome is not (DedupOutcome.Unique or DedupOutcome.Flagged or DedupOutcome.Duplicate))
+        {
+            return false;
+        }
+
+        var stored = decision.Outcome == DedupOutcome.Duplicate ? decision.DuplicateOf ?? decision.Id : decision.Id;
+        foreach (var other in decisions)
+        {
+            if (other.Claim is not null && other.Claim.Id == stored)
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static List<ChunkOutcome> Outcomes(DedupReport report, HashSet<string> committedIds, HashSet<string> settled)

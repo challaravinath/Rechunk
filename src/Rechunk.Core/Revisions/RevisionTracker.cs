@@ -289,7 +289,13 @@ public sealed partial class RevisionTracker : IRevisionTracker
             }
         }
 
-        return await _fingerprints.ForgetAsync(effective, claim.Chunk, hashes, ct).ConfigureAwait(false);
+        var rows = await _fingerprints.ForgetAsync(effective, claim.Chunk, hashes, ct).ConfigureAwait(false);
+        if (_pipeline.Subjects is not null)
+        {
+            await _pipeline.Subjects.RemoveAsync(scope, claim.Chunk, ct).ConfigureAwait(false);
+        }
+
+        return rows;
     }
 
     private sealed record Done(RevisionResult Result, int FingerprintRows, bool SweepFailed = false);

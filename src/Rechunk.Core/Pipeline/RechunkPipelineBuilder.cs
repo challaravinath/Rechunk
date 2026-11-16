@@ -9,6 +9,7 @@ public sealed class RechunkPipelineBuilder
     private INearDuplicateIndex? _simHashIndex;
     private IMinHashIndex? _minHashIndex;
     private IFingerprintStore? _store;
+    private ISubjectIndex? _subjects;
     private ILogger? _logger;
 
     /// <summary>Stage 1 is always on. This is here so the setup reads the same as the other stages.</summary>
@@ -115,6 +116,13 @@ public sealed class RechunkPipelineBuilder
         return this;
     }
 
+    /// <summary>Keep subject links for chunks this pipeline stores. Nothing is written when the scope has no key provider.</summary>
+    public RechunkPipelineBuilder UseSubjectIndex(ISubjectIndex index)
+    {
+        _subjects = index ?? throw new ArgumentNullException(nameof(index));
+        return this;
+    }
+
     /// <summary>For the settings that have no method of their own, like the lease time and the retry settings.</summary>
     public RechunkPipelineBuilder Configure(Action<RechunkOptions> configure)
     {
@@ -137,5 +145,6 @@ public sealed class RechunkPipelineBuilder
             _logger,
             _simHashIndex,
             _minHashIndex,
-            _store);
+            _store,
+            subjects: _subjects);
 }
