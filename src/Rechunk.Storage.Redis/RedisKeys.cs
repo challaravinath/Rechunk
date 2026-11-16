@@ -79,6 +79,14 @@ internal sealed class RedisKeys(string prefix)
 
     public RedisKey DeadLetterScope(string scope) => $"{prefix}:{{dl}}:s:{Tag(scope)}";
 
+    public RedisKey ChunkSubjects(string scope, string chunk) => $"{prefix}:{{{Tag(scope)}}}:sc:{chunk}";
+
+    public RedisKey SubjectChunks(string scope, string subject) => $"{prefix}:{{{Tag(scope)}}}:sj:{subject}";
+
+    public RedisKey SubjectCount(string scope) => $"{prefix}:{{{Tag(scope)}}}:sn";
+
+    public string SubjectChunkPrefix(string scope) => $"{prefix}:{{{Tag(scope)}}}:sj:";
+
     private static string Tag(string scope)
     {
         if (scope.IndexOfAny(['{', '}', '%']) < 0)

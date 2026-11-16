@@ -76,8 +76,9 @@ internal sealed class PiiScanner
         var hits = chosen.Select(f => new PiiHit(f.Type, f.Start, f.Length, _options.PolicyFor(f.Type))).ToList();
         var blocked = hits.Any(h => h.Applied == PiiPolicy.Block);
         var masked = hits.Where(h => blocked || h.Applied == PiiPolicy.Mask).ToList();
+        var subjects = SubjectRefs.Merge(chunk.Subjects, SubjectsIn(text, hits));
         var newText = masked.Count == 0 ? text : Mask(text, masked);
-        return chunk with { Text = newText, Scan = new PiiScan(hits, blocked) };
+        return chunk with { Text = newText, Scan = new PiiScan(hits, blocked), Subjects = subjects };
     }
 
     // overlapping findings: the more specific type wins, then the longer one
@@ -104,6 +105,28 @@ internal sealed class PiiScanner
     {
         var index = Array.IndexOf(Priority, type);
         return index >= 0 ? index : 4;
+    }
+
+    // Taken from the original text, before masking moves the spans. Only email and phone become subjects.
+    private static List<SubjectRef> SubjectsIn(string text, List<PiiHit> hits)
+    {
+        var found = new List<SubjectRef>();
+        foreach (var hit in hits)
+        {
+            if (hit.Type != PiiType.Email && hit.Type != PiiType.Phone)
+            {
+                continue;
+            }
+
+            if (hit.Start < 0 || hit.Length <= 0 || hit.Start + hit.Length > text.Length)
+            {
+                continue;
+            }
+
+            found.Add(new SubjectRef(hit.Type.Name, text.Substring(hit.Start, hit.Length)));
+        }
+
+        return found;
     }
 
     private string Mask(string text, List<PiiHit> hits)

@@ -12,6 +12,12 @@ public sealed record ChunkInput(int Ordinal, string Text, string? Language = nul
 
     /// <summary>What the PII scan found in this chunk, or null when no scan ran. Types and spans only.</summary>
     public IReadOnlyList<PiiHit>? PiiFindings => Scan?.Hits;
+
+    /// <summary>
+    /// People this chunk is about. Email and phone findings are added here by the scanner. The values are keyed before
+    /// anything is stored, and they are not written to the index or the audit log.
+    /// </summary>
+    public IReadOnlyList<SubjectRef>? Subjects { get; init; }
 }
 
 /// <summary>

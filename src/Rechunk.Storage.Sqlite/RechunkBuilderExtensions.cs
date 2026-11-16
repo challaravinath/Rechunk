@@ -31,6 +31,7 @@ public static class RechunkBuilderExtensions
         builder.Services.Replace(ServiceDescriptor.Singleton<IRevisionStore>(_ => new SqliteRevisionStore(options)));
         builder.Services.Replace(ServiceDescriptor.Singleton<IAuditLog>(_ => new SqliteAuditLog(options)));
         builder.Services.Replace(ServiceDescriptor.Singleton<IAuditOutbox>(_ => new SqliteAuditOutbox(options)));
+        builder.Services.Replace(ServiceDescriptor.Singleton<ISubjectIndex>(_ => new SqliteSubjectIndex(options)));
         return builder;
     }
 }

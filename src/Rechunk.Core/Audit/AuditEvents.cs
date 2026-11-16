@@ -22,19 +22,19 @@ internal static class AuditEvents
             switch (o.Status)
             {
                 case ChunkStatus.Stored when o.Matched is { } matched:
-                    events.Add(Make(ctx, o, AuditKind.Flagged, "duplicate, embedded anyway because the policy is Flag", StageOf(o.Stage)) with { Related = matched });
+                    events.Add(WithSubjects(Make(ctx, o, AuditKind.Flagged, "duplicate, embedded anyway because the policy is Flag", StageOf(o.Stage)) with { Related = matched }, o));
                     break;
                 case ChunkStatus.Stored:
                     var replaced = replacing is not null && replacing.Contains(o.Id);
-                    events.Add(Make(
+                    events.Add(WithSubjects(Make(
                         ctx, o, replaced ? AuditKind.Revised : AuditKind.New,
-                        replaced ? "text changed at this position" : "new text", AuditStages.Embed));
+                        replaced ? "text changed at this position" : "new text", AuditStages.Embed), o));
                     break;
                 case ChunkStatus.Duplicate:
                     var alias = o.Id != o.Target;
                     var kind = ctx.OnDuplicate == DuplicatePolicy.Skip || !alias ? AuditKind.Skipped : AuditKind.Aliased;
                     var reason = !alias ? "text was stored already" : "close to a chunk that is stored";
-                    events.Add(Make(ctx, o, kind, reason, StageOf(o.Stage)) with { Related = o.Target });
+                    events.Add(WithSubjects(Make(ctx, o, kind, reason, StageOf(o.Stage)) with { Related = o.Target }, o));
                     break;
                 case ChunkStatus.Blocked:
                     events.Add(Make(ctx, o, AuditKind.Blocked, "kept out by the PII policy", AuditStages.Pii));
@@ -55,6 +55,9 @@ internal static class AuditEvents
 
         return events;
     }
+
+    private static AuditEvent WithSubjects(AuditEvent auditEvent, ChunkOutcome outcome) =>
+        outcome.SubjectCounts.Count == 0 ? auditEvent : auditEvent with { Counts = outcome.SubjectCounts };
 
     public static AuditEvent Make(AuditContext ctx, ChunkOutcome o, AuditKind kind, string reason, string stage) =>
         new(o.Id.Value.Length == 0 ? new ChunkId("blocked:" + o.Ordinal) : o.Id, ctx.Document, ctx.Revision, ctx.Source, ctx.At, ctx.Model, kind, reason)

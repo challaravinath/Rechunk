@@ -29,6 +29,7 @@ public sealed class RechunkPipeline
     private readonly IMinHashIndex? _minHashIndex;
     private readonly IFingerprintStore? _store;
     private readonly IKeyProvider? _keys;
+    private readonly ISubjectIndex? _subjects;
     private readonly BandKeyDirectory? _bands;
     private readonly ILogger _logger;
     private readonly PiiScanner _pii;
@@ -41,7 +42,8 @@ public sealed class RechunkPipeline
         INearDuplicateIndex? simHashIndex = null,
         IMinHashIndex? minHashIndex = null,
         IFingerprintStore? store = null,
-        IKeyProvider? keys = null)
+        IKeyProvider? keys = null,
+        ISubjectIndex? subjects = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _fingerprinter = fingerprinter ?? throw new ArgumentNullException(nameof(fingerprinter));
@@ -49,6 +51,7 @@ public sealed class RechunkPipeline
         _logger = logger ?? NullLogger.Instance;
         _store = store;
         _keys = keys ?? options.KeyProvider;
+        _subjects = subjects;
         _bands = _keys is null ? null : BandKeys.For(_keys);
         options.Validate();
         _pii = new PiiScanner(options.Pii);
@@ -68,6 +71,9 @@ public sealed class RechunkPipeline
 
     /// <summary>The shared fingerprint store, or null when the pipeline only uses its own indexes.</summary>
     public IFingerprintStore? Store => _store;
+
+    /// <summary>Subject links, or null when this pipeline was built without an index.</summary>
+    internal ISubjectIndex? Subjects => _subjects;
 
     public static RechunkPipelineBuilder CreateBuilder() => new();
 
@@ -422,7 +428,44 @@ public sealed class RechunkPipeline
             decisions[i] = decisions[i] with { Language = languages[i] };
         }
 
+        if (scopeKey is { } linkedKey && _subjects is not null && !_options.DryRun)
+        {
+            await SubjectLinker.ApplyAsync(_subjects, userScope, linkedKey, StoredNow(decisions), ct).ConfigureAwait(false);
+        }
+
         return new DedupReport(userScope, _options.DryRun, decisions);
+    }
+
+    // A claim is not stored until it is committed. A duplicate of a claim in this same batch waits with it.
+    internal static List<SubjectLink> StoredNow(IReadOnlyList<DedupDecision> decisions)
+    {
+        var pending = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var decision in decisions)
+        {
+            if (decision.Claim is not null)
+            {
+                pending.Add(decision.Claim.Id.Value);
+            }
+        }
+
+        var links = new List<SubjectLink>();
+        foreach (var decision in decisions)
+        {
+            if (decision.Claim is not null || decision.Outcome is not (DedupOutcome.Unique or DedupOutcome.Flagged or DedupOutcome.Duplicate))
+            {
+                continue;
+            }
+
+            var stored = decision.Outcome == DedupOutcome.Duplicate ? decision.DuplicateOf ?? decision.Id : decision.Id;
+            if (pending.Contains(stored.Value))
+            {
+                continue;
+            }
+
+            links.Add(new SubjectLink(stored, decision.Input, stored == decision.Id));
+        }
+
+        return links;
     }
 
     private void AddToNearIndexes(

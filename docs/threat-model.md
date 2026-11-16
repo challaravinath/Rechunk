@@ -9,6 +9,7 @@ This is the state of the library for the keyed-id work. It is not a promise that
 - The exact digest column. This is SHA-256 of the cleaned text, and it is the lookup key.
 - Band lookup keys, and the SimHash and MinHash payloads.
 - Revision rows, audit rows, dead letters, and whatever text a caller chose to store in a dead letter.
+- Subject links, when a key provider is set. Each row is a scope, a chunk id, a kind, and a keyed subject id.
 - Vectors. Those live in the caller's vector store, not in Rechunk.
 
 ## Attackers
@@ -26,12 +27,14 @@ With a key provider, and after a migration for an old scope:
 - The wrapping key is not written next to the wrapped scope key. A wrong wrapping key does not open the scope key and does not replace the stored row.
 - Band lookup keys are SipHash-2-4 under a key derived from the scope key (`rechunk-band-siphash-v1`). The raw slice is not the stored bucket key. A collision only adds a candidate.
 - SimHash and MinHash payloads in SQLite and Redis are AES-GCM. The data key is HMAC-SHA256 of a different label (`rechunk-payload-aes-v1`) under the scope key. Each value has its own 12 byte nonce and 16 byte tag. The associated data is the scope, the chunk id, and the field name. A changed byte, or a value moved to another row or field, fails to open. The read fails closed.
+- A subject id is HMAC-SHA256 of the label `rechunk-subject-v1`, the kind, and the normalized value, under the scope key. The row stores that id and the kind. It does not store the value.
 
 Without a key provider, ids, band keys, and payloads stay in the 0.1 form.
 
 ## What does not hold
 
 - The exact digest is still stored. Someone with the database can hash a guessed text and see if that column matches. Keyed ids hide that from a caller who only sees ids. They do not hide it from someone who can read the row.
+- Subject rows do not hold the email, the phone number, or the caller id. They do show the kind, and which chunks share a subject. Without the scope key a guessed value does not produce the stored id. With the scope key, or with the chunk text from somewhere else, that guess works. The audit count names the kind and not the value.
 - The in memory indexes keep signatures in process memory. Encryption is for the SQLite and Redis copies.
 - A backup or a copy of the file still has the wrapped key and the ciphertext. Deleting a row is not secure erase.
 - Audit rows and dead letters are not rewritten by the migration. A dead letter can still hold text if that option is on.

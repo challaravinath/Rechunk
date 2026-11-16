@@ -97,6 +97,16 @@ A skipped near duplicate still records an exact row that points at the chunk it 
 
 Dry run reports the same decisions and writes nothing.
 
+## Subjects
+
+A subject is a person a chunk is about. It has a kind and a value. The kind is `email`, `phone`, `customer`, or a kind you define. Two places can name one. The PII scanner adds an email or a phone it finds. You can also set `Subjects` on the chunk, or on the ingest request for every chunk in that request.
+
+The value is normalized before it is keyed. An email is trimmed and lowercased. A phone keeps a leading `+` when the trimmed text has one, and then keeps digits only. Any other kind is trimmed and keeps its case. The stored id is HMAC-SHA256 under the scope key. The message starts with the label `rechunk-subject-v1`, so it is not a chunk id. The text form starts with `s1.`. The raw value is not stored and it is not written to the audit log. The audit line records how many subjects of each kind were linked.
+
+The index needs a key provider. With no provider, nothing is written and dedup behaves as it did in 0.2. Links are stored on the chunk id that was kept. A chunk stored under its own id replaces its previous links. A later ingest of the same text does that too, because the id matches. A near duplicate, or a row that only points at another chunk, adds its subjects to that chunk and leaves the ones already there. The in memory, SQLite and Redis stores all keep the same links. An existing SQLite file gains the `rechunk_subject` table the next time it is opened.
+
+There is no access report and no erase by subject yet. When a sweep drops a chunk that no document uses, its subject links are removed with it.
+
 ## Revisions
 
 Send the whole new version of a document through `RevisionTracker`. It compares chunks with the manifest it has stored.

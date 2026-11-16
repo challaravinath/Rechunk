@@ -36,6 +36,8 @@ public static class RechunkBuilderExtensions
             new RedisAuditLog(sp.GetRequiredService<IConnectionMultiplexer>(), options)));
         builder.Services.Replace(ServiceDescriptor.Singleton<IAuditOutbox>(sp =>
             new RedisAuditOutbox(sp.GetRequiredService<IConnectionMultiplexer>(), options)));
+        builder.Services.Replace(ServiceDescriptor.Singleton<ISubjectIndex>(sp =>
+            new RedisSubjectIndex(sp.GetRequiredService<IConnectionMultiplexer>(), options)));
         return builder;
     }
 

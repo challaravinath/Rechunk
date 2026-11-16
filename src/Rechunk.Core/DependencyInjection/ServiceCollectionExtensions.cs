@@ -39,6 +39,7 @@ public static class ServiceCollectionExtensions
             return new MinHashLshIndex(options.MinHash, bands);
         });
         services.TryAddSingleton<IDeadLetterStore, InMemoryDeadLetterStore>();
+        services.TryAddSingleton<ISubjectIndex, InMemorySubjectIndex>();
         services.TryAddSingleton(sp =>
         {
             // A fingerprint store that is registered (by a storage package) takes over all three indexes.
@@ -53,7 +54,8 @@ public static class ServiceCollectionExtensions
                 sp.GetService<ILogger<RechunkPipeline>>() ?? NullLogger<RechunkPipeline>.Instance,
                 store?.SimHash ?? sp.GetRequiredService<SimHashBandIndex>(),
                 store?.MinHash ?? sp.GetRequiredService<MinHashLshIndex>(),
-                store);
+                store,
+                subjects: sp.GetService<ISubjectIndex>());
         });
         services.TryAddSingleton<IRevisionStore, InMemoryRevisionStore>();
         services.TryAddSingleton<IAuditLog>(sp => new InMemoryAuditLog(sp.GetRequiredService<RechunkOptions>().Audit.InMemoryLimit));

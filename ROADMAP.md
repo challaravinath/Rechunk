@@ -37,7 +37,7 @@ Keyed chunk ids when a provider is set, wrapped scope keys in SQLite, an opt-in 
 ## Planned
 
 ### 0.3.0 Erase by person
-- A subject index that links chunks to the people they are about, stored as keyed ids.
+- A subject index that links chunks to the people they are about, stored as keyed ids. The index is in the tree. The access report and erase by subject are not.
 - An access report: what we hold about this person, as counts, sources and dates, never text.
 - Erase by subject, including near copies.
 
