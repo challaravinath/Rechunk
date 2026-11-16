@@ -48,7 +48,7 @@ public class SubjectIndexTests
         Assert.Null(SubjectIds.Normalize(SubjectKinds.Customer, " "));
     }
 
-    [Theory]
+    [SkippableTheory]
     [MemberData(nameof(Stores))]
     public async Task The_store_replaces_adds_lists_and_counts(string name)
     {
@@ -77,7 +77,7 @@ public class SubjectIndexTests
         Assert.Equal(0, await index.CountAsync("other", subject));
     }
 
-    [Theory]
+    [SkippableTheory]
     [MemberData(nameof(Stores))]
     public async Task A_stored_row_does_not_contain_the_raw_value(string name)
     {
