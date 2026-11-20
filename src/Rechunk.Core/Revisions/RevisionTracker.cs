@@ -74,6 +74,10 @@ public sealed partial class RevisionTracker : IRevisionTracker
     public ValueTask<DocumentManifest?> GetManifestAsync(string scope, DocumentId document, CancellationToken ct = default) =>
         _store.GetAsync(scope, document, ct);
 
+    /// <summary>The access report for one subject. The pipeline this tracker was built with reads the index and the revision store.</summary>
+    public ValueTask<AccessReport> AccessReportAsync(string scope, SubjectRef subject, CancellationToken ct = default) =>
+        _pipeline.AccessReportAsync(scope, subject, ct);
+
     public async ValueTask<RevisionPlan> PlanAsync(
         DocumentId document, string scope, IReadOnlyList<ChunkInput> newChunks, CancellationToken ct = default)
     {

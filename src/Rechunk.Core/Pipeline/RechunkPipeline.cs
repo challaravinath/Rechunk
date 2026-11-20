@@ -20,7 +20,7 @@ namespace Rechunk;
 /// stands for it from then on, and its exact hash is pointed at that chunk. This keeps the indexes small
 /// but also means a chain of small edits (A, then B close to A, then C close to B but not to A) is not followed.
 /// </summary>
-public sealed class RechunkPipeline
+public sealed partial class RechunkPipeline
 {
     private readonly RechunkOptions _options;
     private readonly IChunkFingerprinter _fingerprinter;
@@ -30,6 +30,8 @@ public sealed class RechunkPipeline
     private readonly IFingerprintStore? _store;
     private readonly IKeyProvider? _keys;
     private readonly ISubjectIndex? _subjects;
+    private readonly IRevisionStore? _revisions;
+    private readonly AuditWriter? _audit;
     private readonly BandKeyDirectory? _bands;
     private readonly ILogger _logger;
     private readonly PiiScanner _pii;
@@ -43,7 +45,9 @@ public sealed class RechunkPipeline
         IMinHashIndex? minHashIndex = null,
         IFingerprintStore? store = null,
         IKeyProvider? keys = null,
-        ISubjectIndex? subjects = null)
+        ISubjectIndex? subjects = null,
+        IRevisionStore? revisions = null,
+        AuditWriter? audit = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _fingerprinter = fingerprinter ?? throw new ArgumentNullException(nameof(fingerprinter));
@@ -52,6 +56,8 @@ public sealed class RechunkPipeline
         _store = store;
         _keys = keys ?? options.KeyProvider;
         _subjects = subjects;
+        _revisions = revisions;
+        _audit = audit;
         _bands = _keys is null ? null : BandKeys.For(_keys);
         options.Validate();
         _pii = new PiiScanner(options.Pii);

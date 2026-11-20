@@ -27,7 +27,7 @@ With a key provider, and after a migration for an old scope:
 - The wrapping key is not written next to the wrapped scope key. A wrong wrapping key does not open the scope key and does not replace the stored row.
 - Band lookup keys are SipHash-2-4 under a key derived from the scope key (`rechunk-band-siphash-v1`). The raw slice is not the stored bucket key. A collision only adds a candidate.
 - SimHash and MinHash payloads in SQLite and Redis are AES-GCM. The data key is HMAC-SHA256 of a different label (`rechunk-payload-aes-v1`) under the scope key. Each value has its own 12 byte nonce and 16 byte tag. The associated data is the scope, the chunk id, and the field name. A changed byte, or a value moved to another row or field, fails to open. The read fails closed.
-- A subject id is HMAC-SHA256 of the label `rechunk-subject-v1`, the kind, and the normalized value, under the scope key. The row stores that id and the kind. It does not store the value.
+- A subject id is HMAC-SHA256 of the label `rechunk-subject-v1`, the kind, and the normalized value, under the scope key. The row stores that id and the kind. It does not store the value. An access report returns that id, chunk ids, counts, sources, document ids and revision times. It does not return the value or the chunk text. The audit line for a report is counts only.
 
 Without a key provider, ids, band keys, and payloads stay in the 0.1 form.
 

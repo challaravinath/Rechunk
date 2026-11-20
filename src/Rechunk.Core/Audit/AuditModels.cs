@@ -32,6 +32,9 @@ public enum AuditKind
 
     /// <summary>The record of an erase request. It holds counts and who asked, never the erased content.</summary>
     ErasureReceipt = 9,
+
+    /// <summary>An access report was produced. The counts say how much was found. The value is not in the event.</summary>
+    AccessReport = 10,
 }
 
 /// <summary>The names used for AuditEvent.Stage.</summary>
@@ -56,6 +59,8 @@ public static class AuditStages
     public const string Revision = "revision";
 
     public const string Erasure = "erasure";
+
+    public const string Access = "access";
 }
 
 /// <summary>
