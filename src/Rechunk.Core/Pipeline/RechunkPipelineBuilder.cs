@@ -10,6 +10,8 @@ public sealed class RechunkPipelineBuilder
     private IMinHashIndex? _minHashIndex;
     private IFingerprintStore? _store;
     private ISubjectIndex? _subjects;
+    private IRevisionStore? _revisions;
+    private AuditWriter? _audit;
     private ILogger? _logger;
 
     /// <summary>Stage 1 is always on. This is here so the setup reads the same as the other stages.</summary>
@@ -123,6 +125,20 @@ public sealed class RechunkPipelineBuilder
         return this;
     }
 
+    /// <summary>Document revisions used by an access report to name sources, revisions and dates.</summary>
+    public RechunkPipelineBuilder UseRevisionStore(IRevisionStore store)
+    {
+        _revisions = store ?? throw new ArgumentNullException(nameof(store));
+        return this;
+    }
+
+    /// <summary>Writes the audit line for an access report. Counts only.</summary>
+    public RechunkPipelineBuilder UseAuditWriter(AuditWriter writer)
+    {
+        _audit = writer ?? throw new ArgumentNullException(nameof(writer));
+        return this;
+    }
+
     /// <summary>For the settings that have no method of their own, like the lease time and the retry settings.</summary>
     public RechunkPipelineBuilder Configure(Action<RechunkOptions> configure)
     {
@@ -146,5 +162,7 @@ public sealed class RechunkPipelineBuilder
             _simHashIndex,
             _minHashIndex,
             _store,
-            subjects: _subjects);
+            subjects: _subjects,
+            revisions: _revisions,
+            audit: _audit);
 }

@@ -55,7 +55,9 @@ public static class ServiceCollectionExtensions
                 store?.SimHash ?? sp.GetRequiredService<SimHashBandIndex>(),
                 store?.MinHash ?? sp.GetRequiredService<MinHashLshIndex>(),
                 store,
-                subjects: sp.GetService<ISubjectIndex>());
+                subjects: sp.GetService<ISubjectIndex>(),
+                revisions: sp.GetService<IRevisionStore>(),
+                audit: sp.GetService<AuditWriter>());
         });
         services.TryAddSingleton<IRevisionStore, InMemoryRevisionStore>();
         services.TryAddSingleton<IAuditLog>(sp => new InMemoryAuditLog(sp.GetRequiredService<RechunkOptions>().Audit.InMemoryLimit));

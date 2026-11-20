@@ -105,7 +105,20 @@ The value is normalized before it is keyed. An email is trimmed and lowercased. 
 
 The index needs a key provider. With no provider, nothing is written and dedup behaves as it did in 0.2. Links are stored on the chunk id that was kept. A chunk stored under its own id replaces its previous links. A later ingest of the same text does that too, because the id matches. A near duplicate, or a row that only points at another chunk, adds its subjects to that chunk and leaves the ones already there. The in memory, SQLite and Redis stores all keep the same links. An existing SQLite file gains the `rechunk_subject` table the next time it is opened.
 
-There is no access report and no erase by subject yet. When a sweep drops a chunk that no document uses, its subject links are removed with it.
+When a sweep drops a chunk that no document uses, its subject links are removed with it.
+
+## Access report
+
+Ask what a scope holds about one person. You pass the scope and a subject (a kind and a value). The value is normalized and keyed the same way the index keys it. The report comes back with the keyed subject id, the linked chunk ids, how many chunks sit in each source, the documents and the revision each one is on, how many of those current revisions there are, and how many manifest entries point at a linked chunk without being that chunk. Earliest and latest are the document revision times. A linked chunk that was never put in a document revision has no time, so those two stay empty when that is true of every chunk.
+
+The report does not contain the value, the chunk text, or a fingerprint. A subject with no links is an empty report, not an error. A scope with no key provider has no subject index: the report says it is not available, and dedup is unchanged. The audit line for a report is counts only.
+
+```csharp
+var report = await pipeline.AccessReportAsync("tenant-a", new SubjectRef("email", "ada@example.com"));
+Console.WriteLine(report.ChunkCount);
+```
+
+There is no erase by subject yet.
 
 ## Revisions
 

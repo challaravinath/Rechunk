@@ -6,6 +6,8 @@ All notable changes to Rechunk are listed here.
 
 Subject index. Chunks can be linked to the people they are about. The stored id is an HMAC under the scope key, and the value is not stored. A scope with no key provider does not build the index. See docs/how-it-works.md.
 
+Access report for one subject. Counts, sources, documents, revisions and dates. The value and the chunk text are not in the report or in the audit line.
+
 ## 0.2.1 (2026-11-15)
 
 ### Key Vault key provider
