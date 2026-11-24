@@ -20,7 +20,7 @@
 
   <!-- package metadata, source link and symbols. Each project sets its own PackageId and Description. -->
   <PropertyGroup>
-    <Version>0.2.1</Version>
+    <Version>0.3.0</Version>
     <Authors>Challa Ravindranath</Authors>
     <Copyright>Copyright (c) 2026 Challa Ravindranath</Copyright>
     <Description>Chunk deduplication for RAG pipelines in .NET.</Description>

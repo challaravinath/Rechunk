@@ -222,7 +222,7 @@ Erasing does not touch your source documents, the chunker's output, or the embed
 
 ## Status
 
-Version 0.2.1 is the current set of packages. They are published when the v0.2.1 tag is pushed. The API can still change before 1.0. Keyed ids are in [keyed-ids.md](keyed-ids.md).
+Version 0.3.0 is the current set of packages. They are published when the v0.3.0 tag is pushed. The API can still change before 1.0. Keyed ids are in [keyed-ids.md](keyed-ids.md).
 
 What works today:
 

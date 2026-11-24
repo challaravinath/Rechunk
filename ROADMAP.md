@@ -34,12 +34,10 @@ Keyed chunk ids when a provider is set, wrapped scope keys in SQLite, an opt-in 
 ### 0.2.1
 `Rechunk.Keys.AzureKeyVault` wraps scope keys with a Key Vault key. The vault key stays in the vault. The local wrapped provider stays for callers who hold a wrapping key themselves. See CHANGELOG.md.
 
-## Planned
+### 0.3.0
+A subject index of keyed ids, an access report of counts, sources and dates, and erase by subject with a signed receipt. Near copies that point at an erased chunk are removed from Rechunk's stores. The receipt does not delete vectors in the caller's store. Scopes with no key provider stay as they were in 0.2. See CHANGELOG.md.
 
-### 0.3.0 Erase by person
-- A subject index that links chunks to the people they are about, stored as keyed ids. It is in the tree.
-- An access report for one subject: counts, sources and dates, never the text or the raw value. It is in the tree.
-- Erase by subject, including near copies, with a signed receipt. It is in the tree. The receipt does not delete vectors in the caller's store.
+## Planned
 
 ### 0.4.0 SQL Server and Azure SQL
 - Rechunk.Storage.SqlServer for every store: fingerprints, revisions, audit and dead letters.

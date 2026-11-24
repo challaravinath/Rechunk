@@ -2,13 +2,24 @@
 
 All notable changes to Rechunk are listed here.
 
-## 0.3.0 (unreleased)
+## 0.3.0 (2026-11-24)
 
-Subject index. Chunks can be linked to the people they are about. The stored id is an HMAC under the scope key, and the value is not stored. A scope with no key provider does not build the index. See docs/how-it-works.md.
+Subject index, an access report, and erase by subject with a signed receipt. A scope with no key provider stays as it was in 0.2. See docs/how-it-works.md.
 
-Access report for one subject. Counts, sources, documents, revisions and dates. The value and the chunk text are not in the report or in the audit line.
+### Subject index
+Chunks can be linked to the people they are about. The stored id is an HMAC under the scope key. The value is not stored.
 
-Erase by subject, including near copies, with one signed receipt. Verification rejects a receipt whose fields were changed. The value and the chunk text are not in the receipt or the audit line.
+### Access report
+`AccessReportAsync` returns counts, sources, documents, revisions and dates for one subject. The value and the chunk text are not in the report or the audit line.
+
+### Erase by subject
+`EraseSubjectAsync` removes the linked chunks, including near copies that point at them, and returns one signed receipt. `VerifyErasureReceiptAsync` rejects a receipt whose fields were changed. The value and the chunk text are not in the receipt. The receipt does not delete vectors in your store. Delete the chunk ids from the receipt there yourself.
+
+### Upgrading from 0.2
+
+1. Existing SQLite files gain the `rechunk_subject` table the next time they are opened. `SqliteDatabase.Migrate` creates it. Nothing else in the schema has to be rewritten.
+2. A scope with no key provider is unchanged. The subject index, the access report, and erase by subject are not available for that scope.
+3. No public API was removed or renamed. Callers of 0.2 keep working.
 
 ## 0.2.1 (2026-11-15)
 

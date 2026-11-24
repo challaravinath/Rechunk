@@ -26,7 +26,7 @@ dotnet add package Rechunk.SemanticKernel
 dotnet add package Rechunk.Keys.AzureKeyVault
 ```
 
-Version 0.2.1 is the current set of packages. They are published when the v0.2.1 tag is pushed. The API can still change before 1.0. Rechunk.Extensions.AI is not published.
+Version 0.3.0 is the current set of packages. They are published when the v0.3.0 tag is pushed. The API can still change before 1.0. Rechunk.Extensions.AI is not published. With a key provider, 0.3.0 can report and erase what a scope holds about one person. The erase returns a signed receipt.
 
 ## Quick start
 
@@ -70,7 +70,7 @@ None of these runs scores answer quality. The docs figure is one corpus, and bot
 
 ## Roadmap
 
-0.2.1 is shipped. Next is erase by person. SQL Server, lease renewal, and the rest are later.
+0.3.0 is shipped. Next is SQL Server. Lease renewal and the rest are later.
 
 The list is in [ROADMAP.md](ROADMAP.md).
 
