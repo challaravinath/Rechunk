@@ -12,6 +12,7 @@
 
     <!-- integration packages -->
     <PackageVersion Include="Microsoft.Data.Sqlite" Version="8.0.33" />
+    <PackageVersion Include="Microsoft.Data.SqlClient" Version="5.2.2" />
     <PackageVersion Include="StackExchange.Redis" Version="2.13.23" />
     <PackageVersion Include="Microsoft.Extensions.VectorData.Abstractions" Version="10.11.0" />
     <PackageVersion Include="Microsoft.Extensions.AI.Abstractions" Version="10.11.0" />

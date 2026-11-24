@@ -1,5 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 using Rechunk.Storage.Redis;
+using Rechunk.Storage.SqlServer;
 using Rechunk.Storage.Sqlite;
 
 namespace Rechunk.Core.Tests.Store;
@@ -97,6 +98,34 @@ public class StoreRegistrationTests
         Assert.Equal(0, again.Embedded);
         Assert.Equal(1, again.Deleted);
         Assert.Single(sink.StoredIds);
+    }
+
+    [Fact]
+    public void SqlServer_registration_replaces_only_the_stores_you_ask_for()
+    {
+        var options = new SqlServerStorageOptions { ConnectionString = "Server=localhost" };
+
+        using (var both = Services(b => b.AddRechunkSqlServer(options.ConnectionString!)).BuildServiceProvider())
+        {
+            Assert.IsType<BackedFingerprintStore>(both.GetRequiredService<IFingerprintStore>());
+            Assert.IsType<SqlServerRevisionStore>(both.GetRequiredService<IRevisionStore>());
+            Assert.IsType<InMemoryDeadLetterStore>(both.GetRequiredService<IDeadLetterStore>());
+            Assert.IsType<InMemorySubjectIndex>(both.GetRequiredService<ISubjectIndex>());
+        }
+
+        using (var fingerprints = Services(b => b.AddSqlServerFingerprints(options)).BuildServiceProvider())
+        {
+            Assert.IsType<BackedFingerprintStore>(fingerprints.GetRequiredService<IFingerprintStore>());
+            Assert.IsType<InMemoryRevisionStore>(fingerprints.GetRequiredService<IRevisionStore>());
+        }
+
+        using var revisions = Services(b =>
+        {
+            b.UseInMemoryFingerprintStore();
+            b.AddSqlServerRevisions(options);
+        }).BuildServiceProvider();
+        Assert.IsType<InMemoryFingerprintStore>(revisions.GetRequiredService<IFingerprintStore>());
+        Assert.IsType<SqlServerRevisionStore>(revisions.GetRequiredService<IRevisionStore>());
     }
 
     [Fact]

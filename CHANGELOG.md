@@ -2,6 +2,11 @@
 
 All notable changes to Rechunk are listed here.
 
+## Unreleased
+
+### SQL Server fingerprints and revisions
+`Rechunk.Storage.SqlServer` stores exact hashes, SimHash and MinHash bands, and document revisions in SQL Server or Azure SQL. Tables are created in the `rechunk` schema unless you set another name, or you turn creation off and run docs/sqlserver-schema.sql yourself.
+
 ## 0.3.0 (2026-11-24)
 
 Subject index, an access report, and erase by subject with a signed receipt. A scope with no key provider stays as it was in 0.2. See docs/how-it-works.md.

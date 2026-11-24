@@ -24,6 +24,7 @@ dotnet add package Rechunk.Storage.Redis
 dotnet add package Rechunk.VectorData
 dotnet add package Rechunk.SemanticKernel
 dotnet add package Rechunk.Keys.AzureKeyVault
+dotnet add package Rechunk.Storage.SqlServer
 ```
 
 Version 0.3.0 is the current set of packages. They are published when the v0.3.0 tag is pushed. The API can still change before 1.0. Rechunk.Extensions.AI is not published. With a key provider, 0.3.0 can report and erase what a scope holds about one person. The erase returns a signed receipt.
@@ -55,6 +56,7 @@ Console.WriteLine(report.UniqueCount);
 | Rechunk.VectorData | Batched upserts and scoped deletes for a VectorData collection. |
 | Rechunk.SemanticKernel | Register Rechunk on a Semantic Kernel builder. |
 | Rechunk.Keys.AzureKeyVault | Wrap scope keys with a key that stays in Azure Key Vault. |
+| Rechunk.Storage.SqlServer | Fingerprints and revisions in SQL Server or Azure SQL. |
 
 ## Benchmarks
 

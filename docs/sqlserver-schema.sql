@@ -1,53 +1,134 @@
--- A T-SQL version of the tables Rechunk.Storage.Sqlite uses. Nothing in the repository runs this yet,
--- it is here as a starting point for a SQL Server backend.
---
--- Claiming a hash has to be one atomic step. A way to do it:
---
---   BEGIN TRANSACTION;
---   SELECT ... FROM rechunk_exact WITH (UPDLOCK, HOLDLOCK) WHERE scope = @scope AND hash = @hash;
---   -- then insert, update or leave the row, as the claim rules say
---   COMMIT;
---
--- HOLDLOCK keeps the key range locked, so two callers claiming a hash that does not exist yet can not both insert it.
+-- Run this yourself when CreateTables is false. The default schema name is rechunk.
+-- It is safe to run more than once. Audit, dead letters and the subject index are not in this script.
 
-CREATE TABLE dbo.rechunk_exact (
-    scope        NVARCHAR(200)   NOT NULL,
-    hash         BINARY(32)      NOT NULL,
-    chunk        NVARCHAR(200)   NOT NULL,   -- the chunk id that owns the hash (the alias target for an alias)
-    committed    BIT             NOT NULL,
-    holder       NVARCHAR(200)   NOT NULL,   -- empty once committed
-    lease_until  BIGINT          NOT NULL,   -- .NET ticks, UTC. Zero once committed
-    CONSTRAINT pk_rechunk_exact PRIMARY KEY (scope, hash)
-);
+IF NOT EXISTS (SELECT 1 FROM sys.schemas WHERE name = N'rechunk')
+    EXEC(N'CREATE SCHEMA [rechunk]');
 
-CREATE TABLE dbo.rechunk_band_entry (
-    scope    NVARCHAR(200)   NOT NULL,
-    kind     TINYINT         NOT NULL,       -- 1 SimHash, 2 MinHash
-    id       NVARCHAR(200)   NOT NULL,
-    payload  VARBINARY(MAX)  NOT NULL,       -- opaque, written and read by the core library
-    CONSTRAINT pk_rechunk_band_entry PRIMARY KEY (scope, kind, id)
-);
+IF OBJECT_ID(N'rechunk.exact', N'U') IS NULL
+BEGIN
+    CREATE TABLE [rechunk].[exact] (
+        scope         NVARCHAR(400)  NOT NULL,
+        hash          VARBINARY(32)  NOT NULL,
+        chunk         NVARCHAR(MAX)  NOT NULL,
+        chunk_key     AS CONVERT(VARBINARY(32), HASHBYTES('SHA2_256', chunk)) PERSISTED NOT NULL,
+        committed     BIT            NOT NULL,
+        holder        NVARCHAR(400)  NOT NULL,
+        lease_until   BIGINT         NOT NULL,
+        hash_version  INT            NOT NULL,
+        key_version   INT            NOT NULL,
+        text_id       NVARCHAR(MAX)  NOT NULL,
+        text_key      AS CONVERT(VARBINARY(32), HASHBYTES('SHA2_256', text_id)) PERSISTED NOT NULL,
+        CONSTRAINT pk_exact PRIMARY KEY (scope, hash)
+    );
+END
 
-CREATE TABLE dbo.rechunk_band_key (
-    scope  NVARCHAR(200)   NOT NULL,
-    kind   TINYINT         NOT NULL,
-    band   INT             NOT NULL,
-    [key]  BIGINT          NOT NULL,
-    id     NVARCHAR(200)   NOT NULL,
-    CONSTRAINT pk_rechunk_band_key PRIMARY KEY (scope, kind, band, [key], id)
-);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_exact_owner' AND object_id = OBJECT_ID(N'rechunk.exact'))
+    CREATE INDEX ix_exact_owner ON [rechunk].[exact] (scope, chunk_key) INCLUDE (hash) WHERE committed = 1;
 
-CREATE TABLE dbo.rechunk_dead_letter (
-    id         NVARCHAR(64)    NOT NULL PRIMARY KEY,
-    scope      NVARCHAR(200)   NOT NULL,
-    chunk      NVARCHAR(200)   NOT NULL,
-    document   NVARCHAR(200)   NULL,
-    ordinal    INT             NOT NULL,
-    stage      TINYINT         NOT NULL,     -- 0 Dedup, 1 Embed, 2 VectorWrite, 3 Commit
-    reason     NVARCHAR(1000)  NOT NULL,
-    attempts   INT             NOT NULL,
-    failed_at  BIGINT          NOT NULL,     -- .NET ticks, UTC
-    body       NVARCHAR(MAX)   NULL          -- the chunk text, only when StoreTextInDeadLetters is on
-);
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_exact_text' AND object_id = OBJECT_ID(N'rechunk.exact'))
+    CREATE INDEX ix_exact_text ON [rechunk].[exact] (scope, text_key) WHERE text_id <> N'';
 
-CREATE INDEX ix_rechunk_dead_letter_scope ON dbo.rechunk_dead_letter (scope, failed_at);
+IF OBJECT_ID(N'rechunk.scope_version', N'U') IS NULL
+BEGIN
+    CREATE TABLE [rechunk].[scope_version] (
+        scope         NVARCHAR(400) NOT NULL,
+        hash_version  INT           NOT NULL,
+        key_version   INT           NOT NULL,
+        CONSTRAINT pk_scope_version PRIMARY KEY (scope)
+    );
+END
+
+IF OBJECT_ID(N'rechunk.band_entry', N'U') IS NULL
+BEGIN
+    CREATE TABLE [rechunk].[band_entry] (
+        scope    NVARCHAR(400)  NOT NULL,
+        kind     TINYINT        NOT NULL,
+        id       NVARCHAR(MAX)  NOT NULL,
+        id_key   AS CONVERT(VARBINARY(32), HASHBYTES('SHA2_256', id)) PERSISTED NOT NULL,
+        payload  VARBINARY(MAX) NOT NULL,
+        CONSTRAINT pk_band_entry PRIMARY KEY (scope, kind, id_key)
+    );
+END
+
+IF OBJECT_ID(N'rechunk.band_key', N'U') IS NULL
+BEGIN
+    CREATE TABLE [rechunk].[band_key] (
+        scope   NVARCHAR(400) NOT NULL,
+        kind    TINYINT       NOT NULL,
+        band    INT           NOT NULL,
+        [key]   BIGINT        NOT NULL,
+        id_key  VARBINARY(32) NOT NULL,
+        CONSTRAINT pk_band_key PRIMARY KEY (scope, kind, band, [key], id_key)
+    );
+END
+
+IF OBJECT_ID(N'rechunk.doc', N'U') IS NULL
+BEGIN
+    CREATE TABLE [rechunk].[doc] (
+        scope          NVARCHAR(400) NOT NULL,
+        document       NVARCHAR(MAX) NOT NULL,
+        document_key   AS CONVERT(VARBINARY(32), HASHBYTES('SHA2_256', document)) PERSISTED NOT NULL,
+        revision       INT           NOT NULL,
+        updated_at     BIGINT        NOT NULL,
+        source         NVARCHAR(400) NULL,
+        CONSTRAINT pk_doc PRIMARY KEY (scope, document_key)
+    );
+END
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_doc_source' AND object_id = OBJECT_ID(N'rechunk.doc'))
+    CREATE INDEX ix_doc_source ON [rechunk].[doc] (scope, source, document_key);
+
+IF OBJECT_ID(N'rechunk.doc_chunk', N'U') IS NULL
+BEGIN
+    CREATE TABLE [rechunk].[doc_chunk] (
+        scope             NVARCHAR(400) NOT NULL,
+        document          NVARCHAR(MAX) NOT NULL,
+        document_key      AS CONVERT(VARBINARY(32), HASHBYTES('SHA2_256', document)) PERSISTED NOT NULL,
+        seq               INT           NOT NULL,
+        ordinal           INT           NOT NULL,
+        id                NVARCHAR(MAX) NOT NULL,
+        id_key            AS CONVERT(VARBINARY(32), HASHBYTES('SHA2_256', id)) PERSISTED NOT NULL,
+        target            NVARCHAR(MAX) NOT NULL,
+        target_key        AS CONVERT(VARBINARY(32), HASHBYTES('SHA2_256', target)) PERSISTED NOT NULL,
+        language          NVARCHAR(64)  NULL,
+        first_revision    INT           NOT NULL,
+        previous_ordinal  INT           NULL,
+        replaces          NVARCHAR(MAX) NULL,
+        CONSTRAINT pk_doc_chunk PRIMARY KEY (scope, document_key, seq)
+    );
+END
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_doc_chunk_id' AND object_id = OBJECT_ID(N'rechunk.doc_chunk'))
+    CREATE INDEX ix_doc_chunk_id ON [rechunk].[doc_chunk] (scope, id_key);
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_doc_chunk_target' AND object_id = OBJECT_ID(N'rechunk.doc_chunk'))
+    CREATE INDEX ix_doc_chunk_target ON [rechunk].[doc_chunk] (scope, target_key);
+
+IF OBJECT_ID(N'rechunk.ref', N'U') IS NULL
+BEGIN
+    CREATE TABLE [rechunk].[ref] (
+        scope        NVARCHAR(400) NOT NULL,
+        chunk        NVARCHAR(MAX) NOT NULL,
+        chunk_key    AS CONVERT(VARBINARY(32), HASHBYTES('SHA2_256', chunk)) PERSISTED NOT NULL,
+        count        INT           NOT NULL,
+        state        TINYINT       NOT NULL,
+        holder       NVARCHAR(400) NOT NULL,
+        lease_until  BIGINT        NOT NULL,
+        CONSTRAINT pk_ref PRIMARY KEY (scope, chunk_key)
+    );
+END
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'ix_ref_pending' AND object_id = OBJECT_ID(N'rechunk.ref'))
+    CREATE INDEX ix_ref_pending ON [rechunk].[ref] (scope, chunk_key) WHERE count = 0;
+
+IF OBJECT_ID(N'rechunk.alias', N'U') IS NULL
+BEGIN
+    CREATE TABLE [rechunk].[alias] (
+        scope       NVARCHAR(400) NOT NULL,
+        target      NVARCHAR(MAX) NOT NULL,
+        target_key  AS CONVERT(VARBINARY(32), HASHBYTES('SHA2_256', target)) PERSISTED NOT NULL,
+        alias       NVARCHAR(MAX) NOT NULL,
+        alias_key   AS CONVERT(VARBINARY(32), HASHBYTES('SHA2_256', alias)) PERSISTED NOT NULL,
+        CONSTRAINT pk_alias PRIMARY KEY (scope, target_key, alias_key)
+    );
+END
