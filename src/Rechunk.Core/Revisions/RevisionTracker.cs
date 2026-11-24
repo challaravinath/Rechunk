@@ -78,6 +78,14 @@ public sealed partial class RevisionTracker : IRevisionTracker
     public ValueTask<AccessReport> AccessReportAsync(string scope, SubjectRef subject, CancellationToken ct = default) =>
         _pipeline.AccessReportAsync(scope, subject, ct);
 
+    /// <summary>Erases one subject and returns the signed receipt. The pipeline does the removal and the signing.</summary>
+    public ValueTask<ErasureReceipt> EraseSubjectAsync(string scope, SubjectRef subject, CancellationToken ct = default) =>
+        _pipeline.EraseSubjectAsync(scope, subject, ct);
+
+    /// <summary>True when the receipt still matches this scope's key.</summary>
+    public ValueTask<bool> VerifyErasureReceiptAsync(string scope, ErasureReceipt receipt, CancellationToken ct = default) =>
+        _pipeline.VerifyErasureReceiptAsync(scope, receipt, ct);
+
     public async ValueTask<RevisionPlan> PlanAsync(
         DocumentId document, string scope, IReadOnlyList<ChunkInput> newChunks, CancellationToken ct = default)
     {

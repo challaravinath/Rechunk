@@ -28,6 +28,7 @@ With a key provider, and after a migration for an old scope:
 - Band lookup keys are SipHash-2-4 under a key derived from the scope key (`rechunk-band-siphash-v1`). The raw slice is not the stored bucket key. A collision only adds a candidate.
 - SimHash and MinHash payloads in SQLite and Redis are AES-GCM. The data key is HMAC-SHA256 of a different label (`rechunk-payload-aes-v1`) under the scope key. Each value has its own 12 byte nonce and 16 byte tag. The associated data is the scope, the chunk id, and the field name. A changed byte, or a value moved to another row or field, fails to open. The read fails closed.
 - A subject id is HMAC-SHA256 of the label `rechunk-subject-v1`, the kind, and the normalized value, under the scope key. The row stores that id and the kind. It does not store the value. An access report returns that id, chunk ids, counts, sources, document ids and revision times. It does not return the value or the chunk text. The audit line for a report is counts only.
+- An erasure receipt is HMAC-SHA256 of its fields under the scope key, with the label `rechunk-erasure-receipt-v1`. A valid receipt shows that those keyed chunk ids were removed from Rechunk's stores at that time. It does not show the value or the chunk text. It does not delete vectors in the caller's store. The caller deletes the chunk ids from the receipt there. A changed field does not verify. The audit line for the erase is counts and the receipt id.
 
 Without a key provider, ids, band keys, and payloads stay in the 0.1 form.
 

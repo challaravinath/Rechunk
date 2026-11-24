@@ -84,6 +84,13 @@ public sealed class RedisSubjectIndex : ISubjectIndex
     public ValueTask RemoveAsync(string scope, ChunkId chunk, CancellationToken ct = default) =>
         LinkAsync(scope, chunk, Array.Empty<SubjectKey>(), ct);
 
+    public async ValueTask<int> CountLinksAsync(string scope, ChunkId chunk, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        Require(scope, chunk);
+        return (int)await Db.SetLengthAsync(_keys.ChunkSubjects(scope, chunk.Value)).ConfigureAwait(false);
+    }
+
     public async ValueTask<IReadOnlyList<ChunkId>> ListChunksAsync(string scope, SubjectKey subject, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();

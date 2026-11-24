@@ -8,6 +8,8 @@ Subject index. Chunks can be linked to the people they are about. The stored id 
 
 Access report for one subject. Counts, sources, documents, revisions and dates. The value and the chunk text are not in the report or in the audit line.
 
+Erase by subject, including near copies, with one signed receipt. Verification rejects a receipt whose fields were changed. The value and the chunk text are not in the receipt or the audit line.
+
 ## 0.2.1 (2026-11-15)
 
 ### Key Vault key provider
