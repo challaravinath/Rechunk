@@ -35,6 +35,9 @@ public enum AuditKind
 
     /// <summary>An access report was produced. The counts say how much was found. The value is not in the event.</summary>
     AccessReport = 10,
+
+    /// <summary>A subject was erased. The event holds counts and the receipt id, never the value or the chunk text.</summary>
+    SubjectErased = 11,
 }
 
 /// <summary>The names used for AuditEvent.Stage.</summary>

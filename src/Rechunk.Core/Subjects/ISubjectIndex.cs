@@ -15,6 +15,9 @@ public interface ISubjectIndex
     /// <summary>Removes every subject link for this chunk.</summary>
     ValueTask RemoveAsync(string scope, ChunkId chunk, CancellationToken ct = default);
 
+    /// <summary>How many subject links this chunk has, of every kind.</summary>
+    ValueTask<int> CountLinksAsync(string scope, ChunkId chunk, CancellationToken ct = default);
+
     /// <summary>Chunk ids linked to this subject, in id order.</summary>
     ValueTask<IReadOnlyList<ChunkId>> ListChunksAsync(string scope, SubjectKey subject, CancellationToken ct = default);
 

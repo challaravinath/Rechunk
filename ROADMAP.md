@@ -39,7 +39,7 @@ Keyed chunk ids when a provider is set, wrapped scope keys in SQLite, an opt-in 
 ### 0.3.0 Erase by person
 - A subject index that links chunks to the people they are about, stored as keyed ids. It is in the tree.
 - An access report for one subject: counts, sources and dates, never the text or the raw value. It is in the tree.
-- Erase by subject, including near copies. Not in the tree yet.
+- Erase by subject, including near copies, with a signed receipt. It is in the tree. The receipt does not delete vectors in the caller's store.
 
 ### 0.4.0 SQL Server and Azure SQL
 - Rechunk.Storage.SqlServer for every store: fingerprints, revisions, audit and dead letters.

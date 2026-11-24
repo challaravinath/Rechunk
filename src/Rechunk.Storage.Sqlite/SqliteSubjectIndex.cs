@@ -63,6 +63,18 @@ public sealed class SqliteSubjectIndex : ISubjectIndex
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask<int> CountLinksAsync(string scope, ChunkId chunk, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        Require(scope, chunk);
+        using var connection = _db.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = "SELECT COUNT(*) FROM rechunk_subject WHERE scope = $scope AND chunk = $chunk";
+        command.Parameters.AddWithValue("$scope", scope);
+        command.Parameters.AddWithValue("$chunk", chunk.Value);
+        return ValueTask.FromResult(Convert.ToInt32(command.ExecuteScalar()));
+    }
+
     public ValueTask<IReadOnlyList<ChunkId>> ListChunksAsync(string scope, SubjectKey subject, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();

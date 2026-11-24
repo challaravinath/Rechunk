@@ -118,7 +118,21 @@ var report = await pipeline.AccessReportAsync("tenant-a", new SubjectRef("email"
 Console.WriteLine(report.ChunkCount);
 ```
 
-There is no erase by subject yet.
+## Erase by subject
+
+`EraseSubjectAsync` removes what a scope holds about one person. The value is normalized and keyed the same way the index and the access report key it. Every linked chunk is dropped from the exact index, the near indexes, and the subject index. Manifest entries that are those chunks, or that point at them, are dropped too, so a near copy does not keep the person in a document.
+
+The call returns one signed receipt. It has a receipt id, the scope, the keyed subject id, a UTC time, the counts, the erased chunk ids, the scope key version, and an HMAC-SHA256 over those fields. The label is `rechunk-erasure-receipt-v1`. The value, the chunk text, and the fingerprints are not in the receipt. `VerifyErasureReceiptAsync` checks the signature with the scope key. A changed count, time, subject id, scope, or chunk id does not verify.
+
+A subject that has no links is not an error. The receipt is signed and the counts are zero. Erasing the same subject again returns another signed receipt with zero counts. A scope with no key provider has no index and no key to sign with, so the result is not available and dedup is unchanged.
+
+The receipt proves the chunks were removed from Rechunk. It does not delete vectors in your own store. Delete the chunk ids from the receipt there yourself.
+
+```csharp
+var subject = new SubjectRef("email", "ada@example.com");
+var receipt = await pipeline.EraseSubjectAsync("tenant-a", subject);
+var ok = await pipeline.VerifyErasureReceiptAsync("tenant-a", receipt);
+```
 
 ## Revisions
 

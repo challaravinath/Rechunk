@@ -43,6 +43,20 @@ public sealed class InMemorySubjectIndex : ISubjectIndex
         return ValueTask.CompletedTask;
     }
 
+    public ValueTask<int> CountLinksAsync(string scope, ChunkId chunk, CancellationToken ct = default)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (!_byChunk.TryGetValue(ScopeOf(scope), out var chunks) || !chunks.TryGetValue(chunk.Value, out var links))
+            {
+                return ValueTask.FromResult(0);
+            }
+
+            return ValueTask.FromResult(links.Count);
+        }
+    }
+
     public ValueTask<IReadOnlyList<ChunkId>> ListChunksAsync(string scope, SubjectKey subject, CancellationToken ct = default)
     {
         ct.ThrowIfCancellationRequested();
