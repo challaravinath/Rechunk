@@ -68,3 +68,33 @@ jobs:
         run: dotnet test -c Release
         env:
           RECHUNK_REDIS: localhost:6379
+
+  sqlserver:
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: Y
+          MSSQL_SA_PASSWORD: Rechunk_test_123
+        ports:
+          - 1433:1433
+        options: >-
+          --health-cmd "/opt/mssql-tools18/bin/sqlcmd -S localhost -U sa -P Rechunk_test_123 -C -Q \"SELECT 1\" -b"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          global-json-file: global.json
+
+      - name: Test against SQL Server
+        run: dotnet test -c Release
+        env:
+          RECHUNK_SQLSERVER: Server=localhost,1433;User ID=sa;Password=Rechunk_test_123;TrustServerCertificate=True;Encrypt=True

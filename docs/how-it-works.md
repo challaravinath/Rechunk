@@ -261,7 +261,7 @@ What is still unfinished:
 | Rechunk.SemanticKernel | You want Rechunk registered on a Semantic Kernel builder. That registration is all it does today. |
 | Rechunk.Keys.AzureKeyVault | You want to wrap scope keys with a key that stays in Azure Key Vault. |
 
-There is no SQL Server package. `sqlserver-schema.sql` is a sketch of the tables and has not been run against a server.
+`Rechunk.Storage.SqlServer` keeps fingerprints and revisions in SQL Server or Azure SQL. The script DBAs can run is [sqlserver-schema.sql](sqlserver-schema.sql). Audit, dead letters and the subject index are not in that package yet.
 
 ## Limits
 

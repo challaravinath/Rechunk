@@ -5,10 +5,18 @@ namespace Rechunk.Core.Tests.Store;
 
 public sealed class InMemoryRevisionStoreTests : RevisionStoreContract
 {
+    private readonly object _gate = new();
     private IRevisionStore? _store;
 
-    // one process, so every worker in a test has to get the very same store
-    protected override IRevisionStore Create() => _store ??= new InMemoryRevisionStore();
+    // one process, so every worker in a test has to get the very same store.
+    // The race tests call Create from several threads at once, so the first assignment has to be locked.
+    protected override IRevisionStore Create()
+    {
+        lock (_gate)
+        {
+            return _store ??= new InMemoryRevisionStore();
+        }
+    }
 }
 
 public sealed class SqliteRevisionStoreTests : RevisionStoreContract

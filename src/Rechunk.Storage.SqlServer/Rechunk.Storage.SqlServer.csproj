@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <PackageId>Rechunk.Storage.SqlServer</PackageId>
+    <Description>SQL Server and Azure SQL storage for Rechunk fingerprints and document revisions.</Description>
+    <RootNamespace>Rechunk.Storage.SqlServer</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.SqlClient" />
+    <ProjectReference Include="..\Rechunk.Core\Rechunk.Core.csproj" />
+    <EmbeddedResource Include="Schema.sql" />
+  </ItemGroup>
+
+</Project>
